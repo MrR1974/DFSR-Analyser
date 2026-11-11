@@ -8,4 +8,8 @@
     <InternalsVisibleTo Include="DfsrAnalyser.Tests" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="Taxonomy\default-rules.json" LogicalName="DfsrAnalyser.Core.Taxonomy.default-rules.json" />
+  </ItemGroup>
+
 </Project>

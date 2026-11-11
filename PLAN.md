@@ -105,7 +105,7 @@ src/
   DfsrAnalyser.Cli           `dfsra` console harness: import / stats / files / bench
 tests/
   DfsrAnalyser.Tests         xUnit v3: parser, extractor, importer tests on lab log fragments
-rules/default-rules.json     (phase 2)
+src/DfsrAnalyser.Core/Taxonomy/default-rules.json   embedded default taxonomy (copied to each case as rules.json)
 ```
 
 - **DuckDB** (DuckDB.NET) as the case store. Columnar storage handles `GROUP BY time_bucket, category, dimension` over tens of millions of rows interactively, and compresses repetitive log text well.
@@ -140,8 +140,9 @@ The DuckDB.NET row appender managed ~175 ns per value (≈3 s for the event rows
 ```
 <CaseName>\
   case.duckdb
-  case.json          name, created, collection history, display preferences
-  rules.json         copy of the rule set in effect (editable per case)
+  rules.json         the case's rule set (written from the default on first open; editable)
+  case.json          name, created, collection history, display preferences   (phase 3/5)
+  tmp\               transient CSVs during import
 ```
 
 The original log files are not kept. Everything needed for drill-down, including nested `+` lines, lives in the database.
@@ -198,25 +199,30 @@ Index wrap-around after `maxFileCount` files is handled by also comparing the fi
 
 ---
 
-## 4. Event taxonomy (rules file)
+## 4. Event taxonomy (rules file) — built in phase 2
 
-An ordered JSON list. The first matching rule wins and unmatched events fall into `Other (<Module>)`. Each rule:
+`rules.json` (JSON with comments) has two lists:
 
-```json
-{
-  "category": "Transfer: RDCGET",
-  "group": "Transfer",
-  "module": "INCO",
-  "classMethod": "InConnection::LogTransferActivity",
-  "messageRegex": "Received RDCGET",
-  "note": "Differential transfer; see RDC statistics for wire bytes."
-}
-```
+- **`categories`**: `name`, `group`, `hidden` (off by default in views), `note` (shown in event detail; carries the reference's "misleading entry" warnings).
+- **`rules`**, evaluated in order, first match wins. Conditions (all optional, all must hold): `module`, `classMethod` (exact, list, or `*` wildcard), `message` (RE2 regex), `severity`, `usnReason` (regex), `transferType`, `eventLogId`, `errorCode` (outer or inner), `innerErrorCode` (innermost only, looks through wrappers like 9027). Unmatched events become `Other (<MODULE>)`.
 
-Default categories, drawn from §7, §8 and §12:
+**Engine:** the rules compile to one DuckDB `CASE` expression (`RuleSql`). Rows are categorised as they load (`INSERT … SELECT * REPLACE (<case> AS category) FROM read_csv(…)`), and re-applying is a single `UPDATE` (0.5 s for 442k events). Regexes are validated against DuckDB's RE2 before a rule set is accepted, with the failing rule number reported.
 
-| Group | Categories |
-|---|---|
+**Counting convention:** each file change produces one *visible* entry: the line carrying the USN reason (local create/modify/rename/delete), `Join::SubmitUpdate Sent`, `ReceiveUpdates Received`, the RAWGET/RDCGET line, the `-> DONE` install line. Companion lines (LDB updates, install steps, dominance checks) sit in hidden categories so rates are not double-counted.
+
+**Groups (92 categories, 101 rules in the default set):** Local change · Outbound · Inbound · Install · Conflict · RDC · Staging · Session · Initial sync · Problems · Service & config · Throttling · Plumbing (hidden; nested detail optional).
+
+**Problems first:** error-code rules run before routine ones (e.g. 9047 on `RdcGet` is *Redundant download (benign)*, not a failure). Errors DFSR itself tags `(Ignored)`, and routine start/stop noise (event source registration 1717, SYSVOL migration keys), go to a hidden *Ignored by DFSR (benign)* category. Codes learned from the samples: 1723 / 1753 (RPC, partner restarting), 9028 *content set not found* (partner not ready), 1355 (no domain).
+
+**Correlation pass** (after each file load, and after every re-apply): a `Meet::MoveOut … Moving to conflict/deleted` line becomes *conflict loser* when a conflict for the same file is logged on the same server within 5 s, otherwise *remote delete* when it sits inside `Meet::InstallTombstone` on the same thread.
+
+**Result on the samples:** every event lands in a defined category (none in `Other`). Visible counts reproduce the test scenarios: 1,002 local deletes on Member01 ↔ 1,002 *remote delete* move-outs on DC01; one conflict loser; one modify and one rename per side; 3 × 4202/4204; RPC failures only around the two service restarts.
+
+**Drop Plumbing detail** (`--drop-plumbing-detail` / `Importer.DropPlumbingDetail`): nested text of Plumbing events is not stored; `log_file.nested_dropped` records it. On the samples: 71 → 60 MB (−15%); the bulk of nested text is ID records, which are kept. Categorising during load costs ~15% of import time.
+
+CLI: `dfsra rules --case <c> apply [file]`, `dfsra rules export-default <path>`, `dfsra stats --case <c> [--all]` (category matrix per server).
+
+---|---|
 | Local change | Created, Modified, Deleted (tombstoned), Renamed, Filtered, Skipped temporary, USN-only update, UID tunnelling |
 | Outbound | Update offered (`Join::SubmitUpdate Sent`), File served (`OutConnection::OpenFile`), Staged |
 | Inbound | Update received, Install started, Install retry (`Retries>0`), RAWGET, RDCGET, Transfer failed |
@@ -291,7 +297,7 @@ Re-applying rules is a single `UPDATE event SET category = …` driven by the ru
 |---|---|---|
 | 0 | Samples and spike | **Done** (§1a): both sides of add, modify, collision, rename, bulk delete, name reuse, staging quota, an RDC receive at sev 5, and real `maxEntryCount` rolls on both servers |
 | 1 ✅ | Core parser and case DB | Upload → parse → DuckDB, with field extraction from lines and nested records, TzId-based UTC, roll stitching and incremental fingerprints (correlation moved to phase 2, since it sets categories). **Done 2026-11-11:** 40 tests pass; CLI totals match grep exactly (dated lines, nested lines, [ERROR]/[WARN], sends/receives) and every §1a signature count. Proven by unit tests on fragments cut from the samples and by the CLI harness run over `samples/` (counts match the grep figures in §1a; parse speed and DB size recorded) |
-| 2 | Taxonomy | Default rules file, apply/re-apply, `Other (<Module>)` fallback, rule notes, correlation pass (move-out as delete/conflict/update), "drop Plumbing detail" import option |
+| 2 ✅ | Taxonomy | Default rules file, apply/re-apply, `Other (<Module>)` fallback, rule notes, correlation pass (move-out as delete/conflict/update), "drop Plumbing detail" import option |
 | 3 | Main UI | Case open/create, upload, facet pane, chart, aggregate grid, lazy drill-down, event detail |
 | 4 | Name resolution | Config-dump parsing, DB GUID inference, origin/partner/RG/RF dimensions |
 | 5 | Remote collection | AD discovery (incl. SYSVOL/DCs), SMB copy, time-range selection, alternate credentials, collection profiles and top-up, optional event-log collection and `.evtx` upload |

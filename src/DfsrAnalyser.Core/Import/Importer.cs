@@ -29,6 +29,12 @@ public sealed class Importer(CaseStore store)
     /// <summary>Upper bound on files parsed ahead of the commit stage (bounds temp disk use).</summary>
     public int MaxParallelism { get; init; } = Math.Clamp(Environment.ProcessorCount - 1, 1, 8);
 
+    /// <summary>
+    /// Do not store nested detail for Plumbing-category events (mostly async I/O statistics).
+    /// Saved ~15% of the case on the lab samples; more on logs dominated by transfers.
+    /// </summary>
+    public bool DropPlumbingDetail { get; init; }
+
     /// <summary>Finds Dfsr*.log and Dfsr*.log.gz under the given files or folders (recursively).</summary>
     public static List<string> FindLogFiles(IEnumerable<string> paths)
     {
@@ -230,8 +236,9 @@ public sealed class Importer(CaseStore store)
         }
 
         var loadSw = Stopwatch.StartNew();
-        try { store.LoadCsv(parsed.Csv!); }
+        try { store.LoadCsv(parsed.Csv!, rec.FileId, DropPlumbingDetail); }
         finally { parsed.Csv!.DeleteFiles(); }
+        store.Correlate(rec.FileId);
         var loadTime = loadSw.Elapsed;
 
         long? lastId = parsed.LastLine is { } ll ? CaseStore.EventId(rec.FileId, ll) : rec.LastEventId;
@@ -267,6 +274,7 @@ public sealed class Importer(CaseStore store)
         rec.Unrecognised = parsed.Unrecognised;
         rec.LastEventLine = parsed.LastLine ?? rec.LastEventLine;
         rec.LastEventId = lastId;
+        rec.NestedDropped |= DropPlumbingDetail;
         rec.IsComplete = plan.Complete;
         rec.ImportedAt = DateTime.UtcNow;
         store.UpdateFile(rec);
@@ -284,8 +292,9 @@ public sealed class Importer(CaseStore store)
         var stored = store.LoadEvent(eventId) ?? throw new InvalidOperationException($"Event {eventId} not found.");
         stored.Raw.Nested.AddRange(lines);
         store.DeleteEvent(eventId);
-        using var writer = store.OpenSmallWriter();
-        writer.Write(eventId, stored.FileId, stored.ServerId, stored.Raw, stored.TsUtc, FieldExtractor.Extract(stored.Raw));
+        using (var writer = store.OpenSmallWriter())
+            writer.Write(eventId, stored.FileId, stored.ServerId, stored.Raw, stored.TsUtc, FieldExtractor.Extract(stored.Raw));
+        store.CategoriseEvent(eventId);
     }
 
     // ---------------------------------------------------------------- probe

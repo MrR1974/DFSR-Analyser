@@ -11,6 +11,8 @@ public sealed class ImporterTests : IDisposable
     private string Logs => Path.Combine(_root, "logs");
     private string CaseDir => Path.Combine(_root, "case");
 
+    private static CancellationToken Ct => TestContext.Current.CancellationToken;
+
     public ImporterTests() => Directory.CreateDirectory(Logs);
 
     public void Dispose()
@@ -60,7 +62,7 @@ public sealed class ImporterTests : IDisposable
     {
         var (a, b) = WriteSplitRoll();
         using var store = CaseStore.Open(CaseDir);
-        var results = new Importer(store).Import([b, a]);
+        var results = new Importer(store).Import([b, a], ct: Ct);
 
         Assert.All(results, r => Assert.Equal(FileOutcome.Imported, r.Outcome));
         Assert.Equal((Samples.IdRecord.Length, "file_0001.txt"), SplitEvent(store));
@@ -75,10 +77,10 @@ public sealed class ImporterTests : IDisposable
         using var store = CaseStore.Open(CaseDir);
         var importer = new Importer(store);
 
-        importer.Import([b]);
+        importer.Import([b], ct: Ct);
         Assert.Equal(1, new CaseStats(store).PendingOrphans());
 
-        importer.Import([a]);
+        importer.Import([a], ct: Ct);
         Assert.Equal(0, new CaseStats(store).PendingOrphans());
         Assert.Equal((Samples.IdRecord.Length, "file_0001.txt"), SplitEvent(store));
     }
@@ -94,7 +96,7 @@ public sealed class ImporterTests : IDisposable
         using var store = CaseStore.Open(CaseDir);
         var importer = new Importer(store);
 
-        var r1 = Assert.Single(importer.Import([log]));
+        var r1 = Assert.Single(importer.Import([log], ct: Ct));
         Assert.Equal(FileOutcome.Imported, r1.Outcome);
         Assert.False(Assert.Single(store.ListFiles()).IsComplete);
         Assert.Equal(2, store.Scalar<long>("SELECT count(*) FROM event"));
@@ -104,7 +106,7 @@ public sealed class ImporterTests : IDisposable
         lines.Add(Samples.RawGet);
         File.WriteAllText(log, head + string.Join("\r\n", lines) + "\r\n");
 
-        var r2 = Assert.Single(importer.Import([log]));
+        var r2 = Assert.Single(importer.Import([log], ct: Ct));
         Assert.Equal(FileOutcome.Resumed, r2.Outcome);
         Assert.Equal(3, store.Scalar<long>("SELECT count(*) FROM event"));
         Assert.Equal(3, store.Scalar<long>("SELECT count(DISTINCT event_id) FROM event"));
@@ -115,14 +117,14 @@ public sealed class ImporterTests : IDisposable
         File.Delete(log);
         var gz = WriteLog("Dfsr00001.log.gz", head + string.Join("\r\n", lines) + "\r\n", gzip: true);
 
-        var r3 = Assert.Single(importer.Import([gz]));
+        var r3 = Assert.Single(importer.Import([gz], ct: Ct));
         Assert.Equal(FileOutcome.Resumed, r3.Outcome);
         Assert.Equal(4, store.Scalar<long>("SELECT count(*) FROM event"));
         var file = Assert.Single(store.ListFiles());
         Assert.True(file.IsComplete);
         Assert.Equal(4, file.EventCount);
 
-        var r4 = Assert.Single(importer.Import([gz]));
+        var r4 = Assert.Single(importer.Import([gz], ct: Ct));
         Assert.Equal(FileOutcome.Unchanged, r4.Outcome);
         Assert.Equal(4, store.Scalar<long>("SELECT count(*) FROM event"));
     }
@@ -133,11 +135,11 @@ public sealed class ImporterTests : IDisposable
         var first = WriteLog("Dfsr00001.log", Header(1, 1) + Samples.SubmitUpdateSent + "\r\n", gzip: false);
         using var store = CaseStore.Open(CaseDir);
         var importer = new Importer(store);
-        importer.Import([first]);
+        importer.Import([first], ct: Ct);
         Assert.False(store.ListFiles()[0].IsComplete);
 
         var second = WriteLog("Dfsr00002.log", Header(1, 2) + Samples.RawGet + "\r\n", gzip: false);
-        importer.Import([second]);
+        importer.Import([second], ct: Ct);
         var files = store.ListFiles();
         Assert.True(files[0].IsComplete);
         Assert.False(files[1].IsComplete);
@@ -148,7 +150,7 @@ public sealed class ImporterTests : IDisposable
     {
         var log = WriteLog("Dfsr00001.log.gz", Header(1, 1) + Samples.CreateNewRecord + "\r\n" + string.Join("\r\n", Samples.IdRecord) + "\r\n", gzip: true);
         using var store = CaseStore.Open(CaseDir);
-        new Importer(store).Import([log]);
+        new Importer(store).Import([log], ct: Ct);
         Assert.Equal(new DateTime(2026, 11, 11, 0, 47, 5, 743), store.Scalar<DateTime>("SELECT ts_utc FROM event"));
         Assert.Equal(new DateTime(2026, 11, 11, 11, 47, 5, 743), store.Scalar<DateTime>("SELECT ts_local FROM event"));
     }
@@ -158,7 +160,7 @@ public sealed class ImporterTests : IDisposable
     {
         var log = WriteLog("Dfsr00001.log.gz", Header(1, 1, "WIN-OLDNAME") + Samples.SubmitUpdateSent + "\r\n", gzip: true);
         using var store = CaseStore.Open(CaseDir);
-        new Importer(store).Import([log], serverName: "DFSRDC01");
+        new Importer(store).Import([log], serverName: "DFSRDC01", ct: Ct);
         Assert.Equal("DFSRDC01", store.Scalar<string>("SELECT name FROM server"));
         Assert.Equal("WIN-OLDNAME", store.Scalar<string>("SELECT alias FROM server_alias"));
     }

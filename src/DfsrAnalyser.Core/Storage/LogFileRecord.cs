@@ -25,6 +25,8 @@ public sealed class LogFileRecord
     public int? Unrecognised { get; set; }
     public int? LastEventLine { get; set; }
     public long? LastEventId { get; set; }
+    /// <summary>Nested detail of Plumbing-category events was not stored for this file.</summary>
+    public bool NestedDropped { get; set; }
     public bool IsComplete { get; set; }
     public DateTime? ImportedAt { get; set; }
 }

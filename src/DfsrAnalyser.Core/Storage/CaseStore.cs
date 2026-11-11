@@ -1,20 +1,27 @@
 using System.Data.Common;
 using DfsrAnalyser.Core.Parsing;
+using DfsrAnalyser.Core.Taxonomy;
 using DuckDB.NET.Data;
 
 namespace DfsrAnalyser.Core.Storage;
 
 /// <summary>
-/// A case: a folder holding <c>case.duckdb</c>. Owns the connection and all SQL.
+/// A case: a folder holding <c>case.duckdb</c> and <c>rules.json</c>. Owns the connection and all SQL.
 /// Not thread-safe; one importer or one UI session at a time.
 /// </summary>
 public sealed class CaseStore : IDisposable
 {
     public const string DatabaseFileName = "case.duckdb";
+    public const string RulesFileName = "rules.json";
 
     public string Folder { get; }
     public string DatabasePath { get; }
+    public string RulesPath => Path.Combine(Folder, RulesFileName);
     internal DuckDBConnection Connection { get; }
+
+    /// <summary>The rule set used to categorise imports (the case's rules.json).</summary>
+    public RuleSet Rules { get; private set; } = new();
+    private string _categoryExpr = RuleSql.FallbackExpression;
 
     private CaseStore(string folder)
     {
@@ -24,10 +31,99 @@ public sealed class CaseStore : IDisposable
         Connection = new DuckDBConnection($"Data Source={DatabasePath}");
         Connection.Open();
         Execute(Schema.Ddl);
-        Execute("INSERT INTO meta VALUES ('schema_version', ?) ON CONFLICT (key) DO NOTHING", Schema.Version.ToString());
+        Migrate();
+        Execute("INSERT INTO meta VALUES ('schema_version', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", Schema.Version.ToString());
+
+        if (!File.Exists(RulesPath)) File.WriteAllText(RulesPath, RuleSet.DefaultJson());
+        UseRules(RuleSet.Load(RulesPath));
     }
 
     public static CaseStore Open(string folder) => new(folder);
+
+    private void Migrate()
+    {
+        // v1 -> v2: categories and dropped-detail flag.
+        Execute("ALTER TABLE log_file ADD COLUMN IF NOT EXISTS nested_dropped BOOLEAN DEFAULT FALSE");
+    }
+
+    // ---------- taxonomy ----------
+
+    /// <summary>
+    /// Validates a rule set (structure, and every regex against DuckDB's RE2) and makes it the one
+    /// used for subsequent imports. Does not touch existing rows; see <see cref="ApplyRules"/>.
+    /// </summary>
+    public void UseRules(RuleSet rules)
+    {
+        rules.Validate();
+        for (var i = 0; i < rules.Rules.Count; i++)
+        {
+            var r = rules.Rules[i];
+            foreach (var (what, pattern) in new[] { ("message", r.Message), ("usnReason", r.UsnReason) })
+            {
+                if (pattern is null) continue;
+                try { Scalar<bool>($"SELECT regexp_matches('', {RuleSql.Literal(pattern)})"); }
+                catch (DuckDBException ex) { throw new RuleSetException($"Rule {i + 1} ({r.Category}): invalid {what} regex: {ex.Message}", ex); }
+            }
+        }
+        Rules = rules;
+        _categoryExpr = RuleSql.CaseExpression(rules);
+
+        Execute("DELETE FROM category");
+        var ord = 0;
+        foreach (var c in rules.Categories)
+            Execute("INSERT INTO category VALUES (?, ?, ?, ?, ?)", c.Name, c.Group, c.Hidden, c.Note, ord++);
+    }
+
+    /// <summary>Saves a rule set as the case's rules.json and re-categorises every event.</summary>
+    public void SaveAndApplyRules(RuleSet rules)
+    {
+        UseRules(rules);
+        File.WriteAllText(RulesPath, System.Text.Json.JsonSerializer.Serialize(rules, RuleSet.JsonOptions));
+        ApplyRules();
+    }
+
+    /// <summary>Re-categorises existing events with the current rules (no re-parse).</summary>
+    public void ApplyRules(int? fileId = null)
+    {
+        var where = fileId is null ? "" : $" WHERE file_id = {fileId.Value}";
+        Execute($"UPDATE event SET category = {_categoryExpr}{where}");
+        Correlate(fileId);
+    }
+
+    /// <summary>
+    /// Context-dependent categories that a single line cannot decide. A move to ConflictAndDeleted is a
+    /// conflict loss when a conflict for the same file is logged on the same server within 5 s, otherwise a
+    /// remote delete when it happens inside a tombstone install on the same thread.
+    /// </summary>
+    public void Correlate(int? fileId = null)
+    {
+        const string pending = "'Moved to ConflictAndDeleted'";
+        var scope = fileId is null ? "" : $" AND e.file_id = {fileId.Value}";
+        Execute($"""
+            UPDATE event e SET category = 'Moved to ConflictAndDeleted: conflict loser'
+            WHERE e.category = {pending}{scope} AND EXISTS (
+                SELECT 1 FROM event c
+                WHERE c.server_id = e.server_id AND c.file_name = e.file_name
+                  AND c.category IN ('Conflict detected', 'Conflict reported (4412)')
+                  AND c.ts_utc BETWEEN e.ts_utc - INTERVAL 5 SECOND AND e.ts_utc + INTERVAL 5 SECOND)
+            """);
+        Execute($"""
+            UPDATE event e SET category = 'Moved to ConflictAndDeleted: remote delete'
+            WHERE e.category = {pending}{scope} AND EXISTS (
+                SELECT 1 FROM event t
+                WHERE t.server_id = e.server_id AND t.thread = e.thread AND t.file_name = e.file_name
+                  AND t.class_method = 'Meet::InstallTombstone'
+                  AND t.ts_utc BETWEEN e.ts_utc - INTERVAL 2 SECOND AND e.ts_utc + INTERVAL 2 SECOND)
+            """);
+    }
+
+    /// <summary>Categorises one event (after a single-event rewrite).</summary>
+    public void CategoriseEvent(long eventId) =>
+        Execute($"UPDATE event SET category = {_categoryExpr} WHERE event_id = ?", eventId);
+
+    /// <summary>Category names in the Plumbing group (nested detail optional).</summary>
+    public string PlumbingCategoriesSql =>
+        "(SELECT name FROM category WHERE grp = " + RuleSql.Literal(RuleSet.PlumbingGroup) + ")";
 
     public void Dispose() => Connection.Dispose();
 
@@ -81,13 +177,13 @@ public sealed class CaseStore : IDisposable
             file_name = ?, source_path = ?, size_bytes = ?, header_computer = ?, tz_id = ?, tz_name = ?, tz_basis = ?,
             log_level = ?, max_entry_count = ?, max_file_count = ?, sequence = ?, first_ts_utc = ?, last_ts_utc = ?,
             line_count = ?, event_count = ?, orphan_lines = ?, unrecognised = ?, last_event_line = ?, last_event_id = ?,
-            is_complete = ?, imported_at = ?
+            nested_dropped = ?, is_complete = ?, imported_at = ?
         WHERE file_id = ?
         """,
         f.FileName, f.SourcePath, f.SizeBytes, f.HeaderComputer, f.TzId, f.TzName, f.TzBasis,
         f.LogLevel, f.MaxEntryCount, f.MaxFileCount, f.Sequence, f.FirstTsUtc, f.LastTsUtc,
         f.LineCount, f.EventCount, f.OrphanLines, f.Unrecognised, f.LastEventLine, f.LastEventId,
-        f.IsComplete, f.ImportedAt, f.FileId);
+        f.NestedDropped, f.IsComplete, f.ImportedAt, f.FileId);
 
     private List<LogFileRecord> QueryFiles(string tail, params object?[] args)
     {
@@ -95,7 +191,7 @@ public sealed class CaseStore : IDisposable
         using var cmd = Command($"""
             SELECT file_id, server_id, file_name, source_path, size_bytes, header_computer, tz_id, tz_name, tz_basis,
                    log_level, max_entry_count, max_file_count, sequence, idx, first_line_hash, first_ts_utc, last_ts_utc,
-                   line_count, event_count, orphan_lines, unrecognised, last_event_line, last_event_id, is_complete, imported_at
+                   line_count, event_count, orphan_lines, unrecognised, last_event_line, last_event_id, is_complete, imported_at, nested_dropped
             FROM log_file {tail}
             """, args);
         using var r = cmd.ExecuteReader();
@@ -128,6 +224,7 @@ public sealed class CaseStore : IDisposable
                 LastEventId = Get<long?>(r, 22),
                 IsComplete = r.GetBoolean(23),
                 ImportedAt = Get<DateTime?>(r, 24),
+                NestedDropped = Get<bool?>(r, 25) ?? false,
             });
         }
         return list;
@@ -146,19 +243,37 @@ public sealed class CaseStore : IDisposable
     /// <summary>Folder for temporary CSV files produced during import.</summary>
     public string TempFolder => Path.Combine(Folder, "tmp");
 
-    /// <summary>Loads CSV files produced by <see cref="CsvBulkWriter"/> with DuckDB's native COPY.</summary>
-    public void LoadCsv(CsvBulkWriter csv)
+    /// <summary>
+    /// Loads CSV files produced by <see cref="CsvBulkWriter"/> using DuckDB's native CSV reader, assigning
+    /// categories with the current rules as rows are inserted. When <paramref name="dropPlumbingDetail"/>
+    /// is set, nested text of Plumbing-category events is not stored.
+    /// </summary>
+    public void LoadCsv(CsvBulkWriter csv, int fileId, bool dropPlumbingDetail = false)
     {
-        CopyFrom("event", csv.EventPath);
-        CopyFrom("event_nested", csv.NestedPath);
+        if (HasData(csv.EventPath))
+        {
+            Execute($"""
+                INSERT INTO event
+                SELECT * REPLACE ({_categoryExpr} AS category)
+                FROM {ReadCsv(csv.EventPath, Schema.EventColumns)}
+                """);
+        }
+        if (HasData(csv.NestedPath))
+        {
+            var filter = dropPlumbingDetail
+                ? $"""
+                   WHERE n.event_id NOT IN (SELECT event_id FROM event WHERE file_id = {fileId} AND category IN {PlumbingCategoriesSql})
+                   """
+                : "";
+            Execute($"INSERT INTO event_nested SELECT n.* FROM {ReadCsv(csv.NestedPath, Schema.NestedColumns)} n {filter}");
+        }
+
+        static bool HasData(string p) => File.Exists(p) && new FileInfo(p).Length > 0;
     }
 
-    private void CopyFrom(string table, string path)
-    {
-        if (!File.Exists(path) || new FileInfo(path).Length == 0) return;
-        Execute($"COPY {table} FROM '{path.Replace("'", "''")}' " +
-                "(FORMAT csv, HEADER false, DELIMITER ',', QUOTE '\"', ESCAPE '\"', NULLSTR '', ALLOW_QUOTED_NULLS false, AUTO_DETECT false)");
-    }
+    private static string ReadCsv(string path, (string Name, string Type)[] columns) =>
+        $"read_csv({RuleSql.Literal(path)}, columns = {Schema.CsvColumnSpec(columns)}, header = false, delim = ',', " +
+        "quote = '\"', escape = '\"', nullstr = '', allow_quoted_nulls = false, auto_detect = false)";
 
     /// <summary>Row appender for writing a handful of events.</summary>
     public IEventWriter OpenSmallWriter() => new EventWriter(Connection);
@@ -224,6 +339,22 @@ public sealed class CaseStore : IDisposable
     }
 
     // ---------- generic helpers ----------
+
+    /// <summary>Runs an ad-hoc query; the first row yielded is the column names.</summary>
+    public IEnumerable<object?[]> Query(string sql, params object?[] args)
+    {
+        using var cmd = Command(sql, args);
+        using var r = cmd.ExecuteReader();
+        var names = new object?[r.FieldCount];
+        for (var i = 0; i < r.FieldCount; i++) names[i] = r.GetName(i);
+        yield return names;
+        while (r.Read())
+        {
+            var row = new object?[r.FieldCount];
+            for (var i = 0; i < r.FieldCount; i++) row[i] = r.IsDBNull(i) ? null : r.GetValue(i);
+            yield return row;
+        }
+    }
 
     internal DbCommand Command(string sql, params object?[] args)
     {

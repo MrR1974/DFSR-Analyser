@@ -10,14 +10,22 @@ internal static class Program
         dfsra — DFSR Analyser console harness
 
         Usage:
-          dfsra import --case <folder> [--server <name>] [--per-folder] <file-or-folder>...
+          dfsra import --case <folder> [--server <name>] [--per-folder] [--drop-plumbing-detail] <file-or-folder>...
               Import Dfsr*.log / Dfsr*.log.gz into a case (created if missing).
-              --server      file every log under this server name (default: header Computer name)
-              --per-folder  each immediate sub-folder is one server, named after the folder
-          dfsra stats --case <folder>
-              Print per-server totals, signature counts, field coverage and top methods.
+              --server               file every log under this server name (default: header Computer name)
+              --per-folder           each immediate sub-folder is one server, named after the folder
+              --drop-plumbing-detail do not store nested detail of Plumbing-category events
+          dfsra stats --case <folder> [--all]
+              Print per-server totals, category counts (--all includes hidden categories),
+              signature counts, field coverage and top methods.
+          dfsra rules --case <folder> apply [<rules.json>]
+              Re-categorise the case with its rules.json, or with the given file (which becomes the case's rules).
+          dfsra rules export-default <path>
+              Write the built-in default rules to a file.
           dfsra files --case <folder>
               List imported files.
+          dfsra sql --case <folder> "<query>"
+              Run an ad-hoc read query against the case and print the rows (tab-separated).
           dfsra bench <file-or-folder>...
               Time each import stage (decompress+read, parse, extract) without writing a case.
         """;
@@ -33,6 +41,8 @@ internal static class Program
         var cmd = args[0];
         string? casePath = null, server = null;
         var perFolder = false;
+        var dropPlumbing = false;
+        var all = false;
         var inputs = new List<string>();
         for (var i = 1; i < args.Length; i++)
         {
@@ -41,11 +51,14 @@ internal static class Program
                 case "--case": casePath = args[++i]; break;
                 case "--server": server = args[++i]; break;
                 case "--per-folder": perFolder = true; break;
+                case "--drop-plumbing-detail": dropPlumbing = true; break;
+                case "--all": all = true; break;
                 default: inputs.Add(args[i]); break;
             }
         }
 
-        if (casePath is null && cmd != "bench")
+        var needsCase = cmd != "bench" && !(cmd == "rules" && inputs.FirstOrDefault() == "export-default");
+        if (casePath is null && needsCase)
         {
             Console.Error.WriteLine("--case is required.\n\n" + Usage);
             return 2;
@@ -55,14 +68,16 @@ internal static class Program
         {
             return cmd switch
             {
-                "import" => RunImport(casePath!, server, perFolder, inputs),
-                "stats" => RunStats(casePath!),
+                "import" => RunImport(casePath!, server, perFolder, dropPlumbing, inputs),
+                "stats" => RunStats(casePath!, all),
+                "rules" => RunRules(casePath, inputs),
                 "files" => RunFiles(casePath!),
                 "bench" => RunBench(inputs),
+                "sql" => RunSql(casePath!, string.Join(' ', inputs)),
                 _ => Fail($"Unknown command '{cmd}'."),
             };
         }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException)
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or Core.Taxonomy.RuleSetException)
         {
             Console.Error.WriteLine(ex.Message);
             return 1;
@@ -75,12 +90,12 @@ internal static class Program
         return 2;
     }
 
-    private static int RunImport(string casePath, string? server, bool perFolder, List<string> inputs)
+    private static int RunImport(string casePath, string? server, bool perFolder, bool dropPlumbing, List<string> inputs)
     {
         if (inputs.Count == 0) return Fail("No input files or folders given.");
 
         using var store = CaseStore.Open(casePath);
-        var importer = new Importer(store);
+        var importer = new Importer(store) { DropPlumbingDetail = dropPlumbing };
         var sw = Stopwatch.StartNew();
         var results = new List<FileImportResult>();
 
@@ -117,7 +132,7 @@ internal static class Program
     private static IProgress<ImportProgress> ConsoleProgress() =>
         new SyncProgress<ImportProgress>(p => Console.Error.Write($"\r[{p.FileNumber}/{p.FileCount}] {Path.GetFileName(p.Path),-24} {p.EventsSoFar,12:N0} events"));
 
-    private static int RunStats(string casePath)
+    private static int RunStats(string casePath, bool includeHidden)
     {
         using var store = CaseStore.Open(casePath);
         var stats = new CaseStats(store);
@@ -126,6 +141,10 @@ internal static class Program
         foreach (var s in stats.Servers())
             Console.WriteLine($"{s.Server,-16} {s.Files,5} {s.Events,11:N0} {s.NestedLines,11:N0}  {s.FirstUtc:yyyy-MM-dd HH:mm:ss.fff}  {s.LastUtc:yyyy-MM-dd HH:mm:ss.fff}");
         Console.WriteLine($"Pending orphan blocks: {stats.PendingOrphans()}");
+        var (keptRows, keptChars, dropped) = stats.NestedVolume();
+        Console.WriteLine($"Nested detail: {keptRows:N0} events kept ({keptChars / 1048576.0:N1} M chars), {dropped:N0} events dropped");
+
+        PrintCategories(stats.CategoryCounts(), includeHidden);
 
         PrintMatrix("Signatures", stats.CountBy(CaseStats.Signatures));
         PrintMatrix("Field coverage (events with the field)", stats.CountBy(CaseStats.FieldCoverage));
@@ -134,6 +153,53 @@ internal static class Program
         foreach (var r in stats.TopClassMethods(25))
             Console.WriteLine($"  {r.Count,9:N0}  {r.Key}");
         return 0;
+    }
+
+    private static void PrintCategories(List<CaseStats.CategoryCount> rows, bool includeHidden)
+    {
+        var servers = rows.Select(r => r.Server).Distinct().Order(StringComparer.OrdinalIgnoreCase).ToList();
+        Console.WriteLine($"\nCategories{(includeHidden ? " (all; * = hidden by default)" : " (visible; --all for hidden)")}");
+        Console.WriteLine($"  {"",-46}" + string.Concat(servers.Select(s => $"{s,14}")));
+        foreach (var group in rows.GroupBy(r => r.Group))
+        {
+            var cats = group.GroupBy(r => (r.Category, r.Hidden)).Where(c => includeHidden || !c.Key.Hidden).ToList();
+            var hiddenTotal = group.Where(r => r.Hidden).Sum(r => r.Count);
+            if (cats.Count == 0 && hiddenTotal == 0) continue;
+            Console.WriteLine($"  [{group.Key}]");
+            foreach (var c in cats)
+            {
+                var name = (c.Key.Hidden ? "* " : "  ") + c.Key.Category;
+                Console.WriteLine($"  {name,-46}" + string.Concat(servers.Select(s => $"{c.Where(r => r.Server == s).Sum(r => r.Count),14:N0}")));
+            }
+            if (!includeHidden && hiddenTotal > 0)
+                Console.WriteLine($"  {"  (hidden: " + group.Where(r => r.Hidden).Select(r => r.Category).Distinct().Count() + " categories)",-46}" +
+                                  string.Concat(servers.Select(s => $"{group.Where(r => r.Hidden && r.Server == s).Sum(r => r.Count),14:N0}")));
+        }
+    }
+
+    private static int RunRules(string? casePath, List<string> inputs)
+    {
+        switch (inputs.FirstOrDefault())
+        {
+            case "export-default":
+                if (inputs.Count < 2) return Fail("export-default needs a path.");
+                File.WriteAllText(inputs[1], Core.Taxonomy.RuleSet.DefaultJson());
+                Console.WriteLine($"Wrote {inputs[1]}");
+                return 0;
+
+            case "apply":
+                using (var store = CaseStore.Open(casePath!))
+                {
+                    var sw = Stopwatch.StartNew();
+                    if (inputs.Count >= 2) store.SaveAndApplyRules(Core.Taxonomy.RuleSet.Load(inputs[1]));
+                    else store.ApplyRules();
+                    Console.WriteLine($"Re-categorised in {sw.Elapsed.TotalSeconds:F1}s using {store.Rules.Rules.Count} rules, {store.Rules.Categories.Count} categories.");
+                }
+                return 0;
+
+            default:
+                return Fail("rules: expected 'apply' or 'export-default'.");
+        }
     }
 
     private static void PrintMatrix(string title, List<CountRow> rows)
@@ -151,6 +217,20 @@ internal static class Program
         Console.WriteLine($"{"Id",3} {"Srv",3} {"Idx",4} {"Seq",4} {"Lvl",3} {"Lines",8} {"Events",8} {"Orph",4} {"Done",5}  {"First (UTC)",-23} File");
         foreach (var f in store.ListFiles())
             Console.WriteLine($"{f.FileId,3} {f.ServerId,3} {f.Index,4} {f.Sequence,4} {f.LogLevel,3} {f.LineCount,8:N0} {f.EventCount,8:N0} {f.OrphanLines,4} {f.IsComplete,5}  {f.FirstTsUtc:yyyy-MM-dd HH:mm:ss.fff} {f.FileName}  [{f.TzBasis}]");
+        return 0;
+    }
+
+    private static int RunSql(string casePath, string query)
+    {
+        if (string.IsNullOrWhiteSpace(query)) return Fail("No query given.");
+        using var store = CaseStore.Open(casePath);
+        foreach (var row in store.Query(query))
+            Console.WriteLine(string.Join('\t', row.Select(v => v switch
+            {
+                null => "NULL",
+                DateTime d => d.ToString("yyyy-MM-dd HH:mm:ss.fff"),
+                _ => v.ToString(),
+            })));
         return 0;
     }
 

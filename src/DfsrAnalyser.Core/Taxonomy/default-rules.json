@@ -1,0 +1,273 @@
+// DFSR Analyser default event taxonomy.
+//
+// "categories" define what is shown: name, group, whether hidden by default, and a note
+// shown in event detail. "rules" map log entries to categories; first match wins.
+// Unmatched entries fall into "Other (<MODULE>)".
+//
+// Rule conditions (all optional, all must hold):
+//   module        "MEET" or ["MEET","INCO"]
+//   classMethod   "Meet::Install", a list, or a wildcard such as "Meet::*"
+//   message       RE2 regex, unanchored (use ^ to anchor)
+//   severity      "error" | "warn" | "info"
+//   usnReason     RE2 regex against the USN record Reason
+//   transferType  "RAWGET" | "RDCGET"
+//   eventLogId    4412 or [4102, 4104]
+//   errorCode     32 or [1722, 1237] (outermost or innermost code of the entry)
+//   innerErrorCode  as errorCode, innermost only (looks through wrappers such as 9027)
+//
+// Counting convention: each file change produces ONE visible entry (the line carrying the
+// USN reason, the "Sent:"/"Received:" line, the "-> DONE" line, ...). Companion lines for the
+// same operation are in hidden categories so rates are not double-counted.
+{
+  "version": 1,
+  "categories": [
+    // ---- Local change (originating server) ----
+    { "name": "Local create", "group": "Local change", "note": "A file or folder appeared in the replicated folder on this server (created, copied or moved in). The GVSN DB GUID identifies this server as the origin." },
+    { "name": "Local modify", "group": "Local change", "note": "File content changed on this server (USN reason Data Extend/Overwrite/Truncation)." },
+    { "name": "Local rename/move", "group": "Local change", "note": "Renamed or moved within the replicated folder. Metadata only: no staging or RAWGET/RDCGET follows." },
+    { "name": "Local attribute/security change", "group": "Local change", "note": "Attributes, timestamps or ACL changed (USN reason Basic Info Change / Security Change). Metadata only." },
+    { "name": "Local change (other)", "group": "Local change", "note": "ID record updated from a USN record whose reason is not classified." },
+    { "name": "Local delete", "group": "Local change", "note": "Deleted on this server: the ID record is tombstoned (present 0) and the GVSN advances. Only metadata replicates." },
+    { "name": "USN-only update", "group": "Local change", "note": "A close with no replicable change (e.g. Object ID Change). Nothing replicates." },
+    { "name": "Filtered by file filter", "group": "Local change", "note": "Name matches the replicated folder's file filter (default ~*, *.bak, *.tmp). Never replicated; follow by FID." },
+    { "name": "Skipped: temporary attribute", "group": "Local change", "note": "FILE_ATTRIBUTE_TEMPORARY (0x100) set: DFSR skips the file whatever its name." },
+    { "name": "UID tunnelling", "group": "Local change", "note": "A temporary file renamed back to the original name inherited the old UID with a new GVSN (Office save pattern)." },
+    { "name": "Skipped: obsolete USN record", "group": "Local change", "hidden": true, "note": "A USN record already superseded by a later one for the same file." },
+    { "name": "Local change: database update", "group": "Local change", "hidden": true, "note": "Companion LDB line of a local change; the USN-record line is the counted entry." },
+
+    // ---- Outbound (serving partners) ----
+    { "name": "Update offered to partner", "group": "Outbound", "note": "Join::SubmitUpdate Sent: an update (create, change or delete) was offered on a connection." },
+    { "name": "Updates requested by partner", "group": "Outbound", "note": "A downstream partner asked for updates (SERVER_RequestUpdates), advertising its credits." },
+    { "name": "File requested by partner", "group": "Outbound", "note": "A partner requested a file's content (OutConnection::OpenFile Received request). rdcDesired:1 means RDC may be used." },
+    { "name": "File ready to serve", "group": "Outbound", "note": "Misleading name: 'Sent file' means the upstream is ready to serve; the transfer may not have happened yet." },
+    { "name": "Update offered: database update", "group": "Outbound", "hidden": true, "note": "Companion LDB line of Join::SubmitUpdate." },
+    { "name": "Staged for serving (hash updated)", "group": "Outbound", "hidden": true, "note": "ContentSetManager::UpdateHash: file staged, hash and similarity recomputed." },
+    { "name": "Change notification", "group": "Outbound", "hidden": true, "note": "UpstreamTransport::FlushVvUp: partners notified of a version vector change." },
+
+    // ---- Inbound (receiving from partners) ----
+    { "name": "Update received", "group": "Inbound", "note": "InConnection::ReceiveUpdates Received: the downstream learned of an update." },
+    { "name": "Install started", "group": "Inbound", "hidden": true, "note": "Meet::Install Retries:0: install task created. For pre-seeded matching files updateType:remote is misleading; no data moves." },
+    { "name": "Install retry", "group": "Inbound", "note": "Meet::Install with Retries > 0: earlier attempts failed (often a locked file or sharing violation)." },
+    { "name": "Transfer: RAWGET (full)", "group": "Inbound", "note": "Full copy received. For folders this is metadata only (stagedSize is not real data)." },
+    { "name": "Transfer: RDCGET (differential)", "group": "Inbound", "note": "Differential copy received; see the RDC statistics for bytes on the wire." },
+    { "name": "Transfer failed", "group": "Inbound", "note": "Failed to receive RAWGET/RDCGET. Check the error code (32 = file in use upstream)." },
+    { "name": "Download failed", "group": "Inbound", "note": "Download Succeeded : false. After error 9047 this is benign (content identical, only metadata updated)." },
+    { "name": "Download succeeded", "group": "Inbound", "hidden": true },
+    { "name": "Update processed", "group": "Inbound", "hidden": true, "note": "InConnection::UpdateProcessed: batch progress (updatesLeft / processed / failures)." },
+
+    // ---- Install (downstream completion) ----
+    { "name": "Installed: file content", "group": "Install", "note": "Meet::InstallRename -> DONE: new or updated content is live in the replicated folder." },
+    { "name": "Installed: rename/move", "group": "Install", "note": "Meet::InstallMove -> DONE: metadata-only change applied." },
+    { "name": "Installed: delete (tombstone)", "group": "Install", "note": "Meet::InstallTombstone -> DONE: a delete (or a conflict loser's tombstone) applied." },
+    { "name": "Installed: overwrite", "group": "Install", "note": "Meet::InstallOverwrite -> DONE (e.g. replicated folder root aligned during initial sync)." },
+    { "name": "Previous version moved out", "group": "Install", "note": "An update displaced the old copy (DFSR never patches files in place). A lock on the downstream copy blocks this step." },
+    { "name": "Moved to ConflictAndDeleted", "group": "Install", "note": "Not yet classified as delete or conflict (classification runs after import)." },
+    { "name": "Moved to ConflictAndDeleted: remote delete", "group": "Install", "note": "Deleted on a partner; the local copy was moved to ConflictAndDeleted." },
+    { "name": "Moved to ConflictAndDeleted: conflict loser", "group": "Conflict", "note": "This server's copy lost a conflict and was moved to ConflictAndDeleted." },
+    { "name": "Install detail", "group": "Install", "hidden": true },
+    { "name": "ConflictAndDeleted housekeeping", "group": "Install", "hidden": true, "note": "ConflictWorkerTask: manifest and quota processing for ConflictAndDeleted." },
+
+    // ---- Conflict ----
+    { "name": "Conflict detected", "group": "Conflict", "note": "Meet::LocalDominates Conflicting: the name of the check, not the outcome. Last writer wins; look for 4412 to see which copy lost." },
+    { "name": "Conflict reported (4412)", "group": "Conflict", "note": "Event 4412: the local copy lost a conflict and was moved to ConflictAndDeleted." },
+    { "name": "Dominance check", "group": "Conflict", "hidden": true, "note": "Routine 'Remote/Local version dominates' check during a normal update. Not a conflict. Logged at severity 4 on modern Windows Server." },
+
+    // ---- RDC ----
+    { "name": "RDC statistics (downstream)", "group": "RDC", "note": "Rdc Need Assembler Statistics: compression ratio and bytes received." },
+    { "name": "RDC statistics (upstream)", "group": "RDC", "note": "RDC Need Reader Statistics: bytes sent to the downstream." },
+    { "name": "RDC detail", "group": "RDC", "hidden": true, "note": "Seed selection, signature generation, similarity data and cache lookups." },
+
+    // ---- Staging ----
+    { "name": "File staged", "group": "Staging", "note": "StageWriter::CompleteDownloadStage: a staged file is complete (upstream: ready to serve; downstream: download staged)." },
+    { "name": "Staging aborted", "group": "Staging", "note": "AbortDownloadStage: staging abandoned (superseded version, or the file was locked)." },
+    { "name": "Staging above high watermark (4202)", "group": "Staging", "note": "Event 4202: staging usage exceeded the high watermark; cleanup starts. Frequent occurrences mean the staging quota is too small." },
+    { "name": "Staging cleanup completed (4204)", "group": "Staging", "note": "Event 4204: old staged files were deleted down to the low watermark." },
+    { "name": "Staging cleanup", "group": "Staging", "hidden": true },
+    { "name": "Staging detail", "group": "Staging", "hidden": true },
+
+    // ---- Session ----
+    { "name": "Connection established", "group": "Session" },
+    { "name": "Connection reset", "group": "Session", "note": "An existing connection was shut down and re-established (configuration change, partner restart, or around conflicts)." },
+    { "name": "Connection in sync", "group": "Session", "note": "InConnection::CommitSession Connection in sync: session committed with no update failures." },
+    { "name": "Session committed", "group": "Session", "hidden": true },
+    { "name": "Version vector exchange", "group": "Session", "hidden": true, "note": "Polling and version vector requests between partners." },
+    { "name": "Updates requested from partner", "group": "Session", "hidden": true },
+    { "name": "Session detail", "group": "Session", "hidden": true },
+
+    // ---- Initial sync ----
+    { "name": "Content set state change", "group": "Initial sync", "note": "Replicated folder state: InitialBuilding, InitialSync(Sync), InitialSync(Cleanup), Normal." },
+    { "name": "Ready for initial sync (4102)", "group": "Initial sync" },
+    { "name": "Initial sync complete (4104)", "group": "Initial sync" },
+    { "name": "Primary initial build complete (4112)", "group": "Initial sync" },
+    { "name": "Pre-existing file moved", "group": "Initial sync", "note": "A file existing only on the non-authoritative member was moved to PreExisting." },
+    { "name": "Directory walk", "group": "Initial sync", "hidden": true, "note": "DirWalkerTask: discovering folder contents (initial build, or a new folder's children)." },
+
+    // ---- Problems ----
+    { "name": "Sharing violation", "group": "Problems", "note": "Error 32 / event 4304: the file is in use. Not permanent; replication proceeds once it is unlocked. Watch Install retry." },
+    { "name": "Access denied", "group": "Problems", "note": "Error 5. At install time this is often a file-screen filter driver (FSRM), not NTFS permissions." },
+    { "name": "RPC failure", "group": "Problems", "note": "Innermost code: 1722 RPC server unavailable, 1723 server too busy, 1753 no endpoints (partner service not listening), 1237 retry, 10060 timed out. Transient around partner restarts; persistent failures point at RPC endpoint mapper / dynamic port connectivity." },
+    { "name": "AD/LDAP failure", "group": "Problems", "note": "DC not answering (58, 81 LDAP_SERVER_DOWN) or no domain (1355). A following error 160 is a knock-on effect." },
+    { "name": "Partner not ready", "group": "Problems", "note": "9026 connection invalid / 9028 content set not found / 9051 content set not ready: the partner is restarting, has not yet picked up the topology, or has not finished initial build. Transient." },
+    { "name": "Connection failed", "group": "Problems", "note": "Connection attempt to a partner failed (partner down, restarting or unreachable)." },
+    { "name": "Install deferred (error)", "group": "Problems", "note": "Meet::Install -> WAIT: install failed and will be retried; see the error code." },
+    { "name": "Redundant download (benign)", "group": "Problems", "note": "Error 9047: hashes coincide, the download is redundant. Not a real error: only version metadata is updated." },
+    { "name": "Superseded staging (benign)", "group": "Problems", "note": "Error 9024 on UseRelated: a newer version superseded one being staged. Harmless." },
+    { "name": "Ignored by DFSR (benign)", "group": "Problems", "hidden": true, "note": "DFSR tagged this error or warning '(Ignored)' itself, or it is routine at service start/stop (event source registration, SYSVOL migration keys, cluster cleanup)." },
+    { "name": "Error (other)", "group": "Problems" },
+    { "name": "Warning (other)", "group": "Problems" },
+
+    // ---- Service and configuration ----
+    { "name": "Service starting", "group": "Service & config" },
+    { "name": "Service stopped", "group": "Service & config" },
+    { "name": "DC bound", "group": "Service & config", "note": "The DC used for AD configuration until the service restarts (event 1206)." },
+    { "name": "AD poll", "group": "Service & config", "note": "Configuration poll. 'N changes' is the number of volumes/RGs, not changes." },
+    { "name": "Event log entry", "group": "Service & config", "note": "An event written to the DFS Replication event log (see the event ID)." },
+    { "name": "Configuration dump", "group": "Service & config", "hidden": true, "note": "Prints the XML-cached copy of the AD configuration." },
+    { "name": "Event log parameter", "group": "Service & config", "hidden": true },
+    { "name": "Service/config detail", "group": "Service & config", "hidden": true },
+
+    // ---- Throttling ----
+    { "name": "Bandwidth throttling wait", "group": "Throttling", "note": "Deliberate pause to honour the connection schedule's bandwidth level (severity 5). Not a fault." },
+
+    // ---- Plumbing (hidden; nested detail can be dropped at import) ----
+    { "name": "Async I/O statistics", "group": "Plumbing", "hidden": true },
+    { "name": "Task scheduling", "group": "Plumbing", "hidden": true },
+    { "name": "Update queue", "group": "Plumbing", "hidden": true },
+    { "name": "Credit accounting", "group": "Plumbing", "hidden": true },
+    { "name": "Locks", "group": "Plumbing", "hidden": true },
+    { "name": "RPC plumbing", "group": "Plumbing", "hidden": true },
+    { "name": "Marshalling", "group": "Plumbing", "hidden": true },
+    { "name": "Journal checkpoint", "group": "Plumbing", "hidden": true }
+  ],
+
+  "rules": [
+    // ===== Problems first: error codes win over the line's routine meaning =====
+    { "category": "Redundant download (benign)", "errorCode": 9047 },
+    { "category": "Superseded staging (benign)", "errorCode": 9024 },
+    { "category": "Sharing violation", "errorCode": 32 },
+    { "category": "Sharing violation", "classMethod": "EventLog::Report", "message": "^Logging eventId:4304 " },
+    { "category": "Install deferred (error)", "classMethod": "Meet::Install", "message": "^-> WAIT" },
+    { "category": "Access denied", "errorCode": 5 },
+    { "category": "Partner not ready", "errorCode": [9026, 9028, 9051] },
+    { "category": "RPC failure", "innerErrorCode": [1722, 1723, 1237, 10060, 1753, 1727, 1726] },
+    { "category": "AD/LDAP failure", "errorCode": [58, 81, 1355], "severity": "error", "comment": "1355 also appears '(Ignored)' on SPN registration; that case is caught below only if not an error." },
+    { "category": "AD/LDAP failure", "module": "CFAD", "severity": "error" },
+    { "category": "Ignored by DFSR (benign)", "message": "\\(Ignored\\)", "severity": "warn" },
+    { "category": "Ignored by DFSR (benign)", "message": "\\(Ignored\\)", "severity": "error" },
+    { "category": "Ignored by DFSR (benign)", "classMethod": "EventLog::Report", "message": "^Failed to Register Event Source", "comment": "1717 while the event log service starts" },
+    { "category": "Ignored by DFSR (benign)", "classMethod": "Migration::SysVolUtil::GetDwordFromRegistry", "message": "^\\[MIG\\] Failed to Open" },
+    { "category": "Connection reset", "classMethod": "ReplicaSetManager::EstablishConnection", "message": "^Shutting down existing connection" },
+    { "category": "Connection failed", "classMethod": ["DownstreamTransport::EstablishConnection", "InConnection::ReConnectAsync", "InConnection::ReConnect"], "severity": "error" },
+    { "category": "Connection failed", "classMethod": ["DownstreamTransport::EstablishConnection", "InConnection::ReConnectAsync", "InConnection::ReConnect"], "severity": "warn" },
+    { "category": "Transfer failed", "classMethod": "InConnection::LogTransferActivity", "message": "^Failed" },
+    { "category": "Download failed", "classMethod": "Meet::Download", "message": "^Download Succeeded : false" },
+    { "category": "Staging aborted", "classMethod": "StageWriter::AbortDownloadStage" },
+    { "category": "Error (other)", "severity": "error" },
+    { "category": "Warning (other)", "severity": "warn" },
+
+    // ===== Local change =====
+    { "category": "Local create", "classMethod": "UsnConsumer::CreateNewRecord", "message": "^ID record created" },
+    { "category": "Local rename/move", "classMethod": "UsnConsumer::UpdateIdRecord", "message": "^ID record updated", "usnReason": "Rename" },
+    { "category": "Local modify", "classMethod": "UsnConsumer::UpdateIdRecord", "message": "^ID record updated", "usnReason": "Data (Extend|Overwrite|Truncation)" },
+    { "category": "Local attribute/security change", "classMethod": "UsnConsumer::UpdateIdRecord", "message": "^ID record updated", "usnReason": "Security Change|Basic Info Change" },
+    { "category": "Local change (other)", "classMethod": "UsnConsumer::UpdateIdRecord", "message": "^ID record updated" },
+    { "category": "Local delete", "classMethod": "UsnConsumer::TombstoneOrDelete", "message": "tombstoned" },
+    { "category": "USN-only update", "classMethod": "UsnConsumer::UpdateUsnOnly", "message": "^USN-only update" },
+    { "category": "Filtered by file filter", "classMethod": "UsnConsumer::ProcessUsnRecord", "message": "^Filtered" },
+    { "category": "Skipped: temporary attribute", "classMethod": "UsnConsumer::ProcessUsnRecord", "message": "FILE_ATTRIBUTE_TEMPORARY" },
+    { "category": "Skipped: obsolete USN record", "classMethod": "UsnConsumer::ProcessUsnRecord", "message": "^Skipping obsolete" },
+    { "category": "UID tunnelling", "classMethod": "UsnConsumer::UidTunnelReanimate" },
+    { "category": "Journal checkpoint", "classMethod": "UsnConsumer::CheckPoint" },
+    { "category": "Local change: database update", "classMethod": ["UsnConsumer::CreateNewRecord", "UsnConsumer::UpdateIdRecord", "UsnConsumer::TombstoneOrDelete", "UsnConsumer::UpdateUsnOnly"], "message": "^LDB " },
+
+    // ===== Outbound =====
+    { "category": "Update offered to partner", "classMethod": "Join::SubmitUpdate", "message": "^Sent:" },
+    { "category": "Update offered: database update", "classMethod": "Join::SubmitUpdate", "message": "^LDB " },
+    { "category": "Updates requested by partner", "classMethod": "SERVER_RequestUpdates" },
+    { "category": "File requested by partner", "classMethod": "OutConnection::OpenFile", "message": "^Received request" },
+    { "category": "File ready to serve", "classMethod": "OutConnectionContentSetContext::OpenFile", "message": "^Sent file" },
+    { "category": "Staged for serving (hash updated)", "classMethod": "ContentSetManager::UpdateHash" },
+    { "category": "Change notification", "classMethod": "UpstreamTransport::FlushVvUp" },
+
+    // ===== Inbound =====
+    { "category": "Update received", "classMethod": "InConnection::ReceiveUpdates", "message": "^Received:" },
+    { "category": "Install retry", "classMethod": "Meet::Install", "message": "^Retries:[1-9]" },
+    { "category": "Install started", "classMethod": "Meet::Install", "message": "^Retries:0" },
+    { "category": "Transfer: RAWGET (full)", "classMethod": "InConnection::LogTransferActivity", "transferType": "RAWGET", "message": "^Received" },
+    { "category": "Transfer: RDCGET (differential)", "classMethod": "InConnection::LogTransferActivity", "transferType": "RDCGET", "message": "^Received" },
+    { "category": "Download succeeded", "classMethod": "Meet::Download", "message": "^Download Succeeded : true" },
+    { "category": "Update processed", "classMethod": "InConnection::UpdateProcessed" },
+
+    // ===== Install =====
+    { "category": "Installed: file content", "classMethod": "Meet::InstallRename", "message": "^-> DONE" },
+    { "category": "Installed: rename/move", "classMethod": "Meet::InstallMove", "message": "^-> DONE" },
+    { "category": "Installed: delete (tombstone)", "classMethod": "Meet::InstallTombstone", "message": "^-> DONE" },
+    { "category": "Installed: overwrite", "classMethod": "Meet::InstallOverwrite", "message": "^-> DONE" },
+    { "category": "Previous version moved out", "classMethod": "Meet::InstallRename", "message": "^Move out previous" },
+    { "category": "Moved to ConflictAndDeleted", "classMethod": "Meet::MoveOut", "message": "^Moving to conflict" },
+    { "category": "Pre-existing file moved", "classMethod": "InitialSyncCleanupTask::MoveOut" },
+
+    // ===== Conflict =====
+    { "category": "Conflict detected", "classMethod": "Meet::LocalDominates", "message": "^Conflicting" },
+    { "category": "Dominance check", "classMethod": "Meet::LocalDominates" },
+    { "category": "Conflict reported (4412)", "classMethod": "EventLog::Report", "message": "^Logging eventId:4412 " },
+    { "category": "ConflictAndDeleted housekeeping", "classMethod": ["ConflictWorkerTask::*", "Meet::ReportConflict"] },
+
+    // ===== Install detail (after the specific Meet rules) =====
+    { "category": "Install detail", "classMethod": ["Meet::*", "TombstoneFid", "InstallingWriter::*"] },
+
+    // ===== RDC =====
+    { "category": "RDC statistics (downstream)", "classMethod": "Rdc::SyncClientState::Flush" },
+    { "category": "RDC statistics (upstream)", "classMethod": "Rdc::SyncServerState::~SyncServerState" },
+    { "category": "RDC detail", "module": ["RDCX", "RDCC", "RDCS", "XRNA"] },
+
+    // ===== Staging =====
+    { "category": "File staged", "classMethod": "StageWriter::CompleteDownloadStage" },
+    { "category": "Staging above high watermark (4202)", "classMethod": "EventLog::Report", "message": "^Logging eventId:4202 " },
+    { "category": "Staging cleanup completed (4204)", "classMethod": "EventLog::Report", "message": "^Logging eventId:4204 " },
+    { "category": "Locks", "classMethod": ["Staging::LockedFiles::*", "FidLockMan::*", "UpdateLock::*"] },
+    { "category": "Staging cleanup", "classMethod": ["StagingCleanupTask::*", "Staging::LruStagingCleanup", "Staging::CleanOldFiles", "Staging::SweepCleanOldFiles", "Staging::CleanupAsync", "Staging::FileDeleted", "Staging::AgeGroups::*"] },
+    { "category": "Staging detail", "module": "STAG" },
+
+    // ===== Session =====
+    { "category": "Connection established", "classMethod": "InConnection::ReConnectAsync", "message": "^Connection established" },
+    { "category": "Connection established", "classMethod": "DownstreamTransport::EstablishConnection", "message": "^Established" },
+    { "category": "Connection established", "classMethod": "SERVER_EstablishConnection", "message": "^Established" },
+    { "category": "Connection in sync", "classMethod": "InConnection::CommitSession", "message": "^Connection in sync" },
+    { "category": "Session committed", "classMethod": "InConnection::CommitSession", "message": "^Committing" },
+    { "category": "Version vector exchange", "classMethod": ["InConnection::ReceiveVvUp", "InConnection::TransportRequestVvUp", "SERVER_RequestVersionVector", "SERVER_AsyncPoll", "OutConnectionContentSetContext::TransportRequestVvUp", "DownstreamTransport::RequestVvUp", "DownstreamTransport::ReceiveVvUp", "UpstreamTransport::AddAsyncPoll"] },
+    { "category": "Updates requested from partner", "classMethod": ["InConnection::TransportRequestUpdates", "DownstreamTransport::RequestUpdates"] },
+
+    // ===== Initial sync =====
+    { "category": "Content set state change", "classMethod": ["ContentSetManager::SetContentSetState", "ContentSetManager::DbBuildComplete", "ContentSetManager::InitialSyncComplete"] },
+    { "category": "Ready for initial sync (4102)", "classMethod": "EventLog::Report", "message": "^Logging eventId:4102 " },
+    { "category": "Initial sync complete (4104)", "classMethod": "EventLog::Report", "message": "^Logging eventId:4104 " },
+    { "category": "Primary initial build complete (4112)", "classMethod": "EventLog::Report", "message": "^Logging eventId:4112 " },
+    { "category": "Directory walk", "module": "DIRW" },
+    { "category": "Directory walk", "classMethod": ["InitialSyncManager::*", "InitialSyncCleanupTask::*"] },
+
+    // ===== Service and configuration =====
+    { "category": "Service starting", "classMethod": "FrsService::ActivateService", "message": "^Activating service" },
+    { "category": "Service stopped", "classMethod": "main", "message": "^Service Exiting" },
+    { "category": "DC bound", "classMethod": "Config::AdConnection::BindToDc", "message": "^Bound" },
+    { "category": "AD poll", "classMethod": "ServiceConfig::ProcessAdPollConfigEvents", "message": "^Received AD Poll" },
+    { "category": "AD poll", "classMethod": "Config::AdReader::Peek" },
+    { "category": "Event log entry", "classMethod": "EventLog::Report", "message": "^Logging eventId:" },
+    { "category": "Event log parameter", "classMethod": "EventLog::Report", "message": "^eventId:\\d+ parameter" },
+    { "category": "Configuration dump", "module": "CPAR" },
+
+    // ===== Plumbing =====
+    { "category": "Async I/O statistics", "module": "ASYN" },
+    { "category": "Task scheduling", "module": "TASK" },
+    { "category": "Update queue", "module": ["UPDI", "UPLK", "UPMG"] },
+    { "category": "Update queue", "classMethod": "LdbManager::WakeUpSleepers" },
+    { "category": "Credit accounting", "module": ["IINC", "ISES", "CRED"] },
+    { "category": "Locks", "module": "FIDL" },
+    { "category": "RPC plumbing", "classMethod": ["AsyncRpcHandler::*", "CancelContext::*", "RpcFinalizeContext", "WrapRpcInitializeFileTransferAsync", "DownstreamTransport::RpcAsyncPipeDownload", "DownstreamTransport::DownloadFileAsync", "InitializeFileTransferAsyncState::*", "RpcAsyncPipeState::*", "RawGetFileDataAsyncState::*", "InConnection::TransportRdcGet"] },
+    { "category": "Marshalling", "module": "MRSH" },
+
+    // ===== Catch-alls by area (after everything specific) =====
+    { "category": "Session detail", "module": ["INCO", "OUTC", "SRTR", "DOWN", "UPST", "JOIN", "HIST"] },
+    { "category": "Service/config detail", "module": ["EVNT", "CFAD", "CXML", "CREG", "CCTX", "SCFG", "SCFS", "W2CH", "W2CF", "W2WB", "ADWR", "SYSM", "CVOL", "CREP", "FCFG", "SETT", "CLUS", "CRMG", "VDSN", "SCNT", "FSVC", "MAIN", "FREP", "VLMG", "RSMG", "CSMG", "PFV2", "PDBX", "BFLT", "RFLT", "SRVC", "VSSW", "WMIC", "DBCJ", "SSYN", "DBGC", "FUTL", "VSNM", "LDBX", "USNC", "CONF", "RPCN", "NTFS"] }
+  ]
+}

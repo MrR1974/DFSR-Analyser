@@ -92,4 +92,30 @@ public sealed class CaseStats(CaseStore store)
     }
 
     public long PendingOrphans() => store.Scalar<long>("SELECT count(*) FROM pending_orphan");
+
+    public sealed record CategoryCount(string Group, string Category, bool Hidden, string Server, long Count);
+
+    /// <summary>Event counts per category and server, in rule-set display order (fallback categories last).</summary>
+    public List<CategoryCount> CategoryCounts()
+    {
+        var rows = new List<CategoryCount>();
+        using var cmd = store.Command("""
+            SELECT coalesce(c.grp, 'Other'), e.category, coalesce(c.hidden, FALSE), s.name, count(*), coalesce(c.ord, 100000) AS ord
+            FROM event e
+            JOIN server s ON s.server_id = e.server_id
+            LEFT JOIN category c ON c.name = e.category
+            GROUP BY ALL
+            ORDER BY ord, e.category, s.name
+            """);
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+            rows.Add(new CategoryCount(r.GetString(0), r.GetString(1), r.GetBoolean(2), r.GetString(3), Convert.ToInt64(r.GetValue(4))));
+        return rows;
+    }
+
+    /// <summary>Nested text volume kept versus dropped (dropped = events with nested_count > 0 and no detail row).</summary>
+    public (long KeptRows, long KeptChars, long DroppedEvents) NestedVolume() =>
+        (store.Scalar<long>("SELECT count(*) FROM event_nested"),
+         store.Scalar<long>("SELECT CAST(coalesce(sum(length(nested_text)), 0) AS BIGINT) FROM event_nested"),
+         store.Scalar<long>("SELECT count(*) FROM event e WHERE nested_count > 0 AND NOT EXISTS (SELECT 1 FROM event_nested n WHERE n.event_id = e.event_id)"));
 }
