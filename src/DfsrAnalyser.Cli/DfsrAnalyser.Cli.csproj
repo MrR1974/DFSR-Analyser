@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>dfsra</AssemblyName>
+    <RootNamespace>DfsrAnalyser.Cli</RootNamespace>
+    <!-- Parallel parsing allocates heavily; server GC keeps workers from stalling each other. -->
+    <ServerGarbageCollection>true</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DfsrAnalyser.Core\DfsrAnalyser.Core.csproj" />
+  </ItemGroup>
+
+</Project>

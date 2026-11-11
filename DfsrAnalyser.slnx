@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/DfsrAnalyser.Cli/DfsrAnalyser.Cli.csproj" />
+    <Project Path="src/DfsrAnalyser.Core/DfsrAnalyser.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/DfsrAnalyser.Tests/DfsrAnalyser.Tests.csproj" />
+  </Folder>
+</Solution>

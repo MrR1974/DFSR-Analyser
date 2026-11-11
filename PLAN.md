@@ -95,19 +95,45 @@ A delete followed by a re-create under the same name gives two unrelated UIDs, a
 ## 2. Architecture
 
 ```
-DfsrAnalyser.sln
-  DfsrAnalyser.Core        parsing, categorisation, name resolution, case DB access (no UI)
-  DfsrAnalyser.Collection  AD discovery, SMB enumeration and copy, incremental tracking
-  DfsrAnalyser.App         WPF shell, view models, charts, grids
-  DfsrAnalyser.Cli         console harness: import a folder into a case, print category counts, timing, DB size
-  DfsrAnalyser.Tests       parser and rule tests against sample log fragments
-  rules/default-rules.json
+DfsrAnalyser.slnx
+global.json                  pins SDK 10.0.1xx; opts dotnet test into Microsoft.Testing.Platform
+Directory.Build.props        net10.0, nullable, implicit usings
+src/
+  DfsrAnalyser.Core          parsing, categorisation, name resolution, case DB access (no UI)
+  DfsrAnalyser.Collection    AD discovery, SMB enumeration and copy, incremental tracking   (phase 5)
+  DfsrAnalyser.App           WPF shell, view models, charts, grids                          (phase 3)
+  DfsrAnalyser.Cli           `dfsra` console harness: import / stats / files / bench
+tests/
+  DfsrAnalyser.Tests         xUnit v3: parser, extractor, importer tests on lab log fragments
+rules/default-rules.json     (phase 2)
 ```
 
 - **DuckDB** (DuckDB.NET) as the case store. Columnar storage handles `GROUP BY time_bucket, category, dimension` over tens of millions of rows interactively, and compresses repetitive log text well.
 - **Charting:** ScottPlot 5 (WPF), chosen for its performance with many bars and series.
 - **Grid:** a virtualised hierarchical grid (TreeListView pattern over a WPF `DataGrid`/`ListView` with lazy child loading).
-- Parsing runs in the background with progress and cancellation. Bulk inserts go through DuckDB's appender.
+- Parsing runs in the background with progress and cancellation. Bulk inserts go through CSV + DuckDB `COPY` (see below); the DuckDB.NET row appender is kept only for single-event rewrites.
+
+### Import pipeline (built in phase 1)
+
+1. **Probe** each file (header + first dated line) and sort per server by Index.
+2. **Plan** in order: match the fingerprint against the case; register new files; trim a partially imported active log back to its last event.
+3. **Parse** in parallel (at most N files ahead, N = cores − 1, capped at 8): read, extract fields, write a pair of temp CSVs (`event`, `event_nested`) under `<case>\tmp`.
+4. **Commit** in order: `COPY` both CSVs, stitch roll orphans, update `log_file`, mark earlier Indexes complete.
+
+**Event ids are derived**: `(file_id << 32) | line_no`. Workers need no shared counter, and a resumed or re-stitched event keeps its id.
+
+### Measured performance (samples: 10 files, 1.32M lines, 442k events; 12 logical CPUs)
+
+| Stage | Throughput |
+|---|---|
+| Read + decompress lines | ~4.2M lines/s |
+| + parse dated/nested structure | ~2.5M lines/s |
+| + field extraction (span scanners; regex version was 20× slower) | ~1.4M lines/s |
+| + CSV formatting | ~0.7M lines/s (single thread) |
+| DuckDB `COPY` into the on-disk case | ~230k event rows/s; detail-heavy files cost more |
+| **Full import** | **~200–240k lines/s** (≈6 s for the samples; 62 MB case) |
+
+The DuckDB.NET row appender managed ~175 ns per value (≈3 s for the event rows alone), and checkpoint/transaction settings made no difference to `COPY`. The full import is therefore within ~1.5× of DuckDB's own load rate on this machine. Projection: ~15 min for a server's full 1000 × 200k-line history, seconds for a typical time-range collection. Remaining levers, if needed: the "drop Plumbing detail" import option (phase 2) and storing nested text compressed as a BLOB.
 
 ### Case folder
 
@@ -142,7 +168,7 @@ Timestamps: local → UTC with the file's TzId (DST-aware). Events keep (file In
 
 ### Field extraction (per event, into columns)
 
-Extracted from the message and nested lines with compiled regexes:
+Extracted from the message and nested lines with hand-written span scanners (`FieldExtractor`):
 
 `connId`, `csId`, `csName`, `replicaSetId`, `rgName`, `uid`, `gvsn`, `parent`, `fid`, file `name`/`fileName` → extension, `attributes` → is-folder/temporary, `present`, `meetInstallUpdate`, `Error:N` (first and innermost of the stack), `eventId:N`, transfer type (RAWGET/RDCGET), `stagedSize`, `Retries:N`, `updateType`, `credits`, `updatesLeft`/`processed`/`failures`, USN `Reason`.
 
@@ -150,10 +176,13 @@ Extracted from the message and nested lines with compiled regexes:
 
 ### Tables (outline)
 
-- `server(server_id, name, tz_offset_min, build, log_level)`
-- `log_file(file_id, server_id, file_name, source_path, size, last_write_utc, header_seq, first_ts_utc, last_ts_utc, imported_at)`
-- `event(event_id, file_id, server_id, line_no, ts_utc, thread, module, src_line, class, method, severity, category, message, nested_count, …extracted columns…)`
-- `event_nested(event_id, seq, text)`, read only on drill-down
+As built (`src/DfsrAnalyser.Core/Storage/Schema.cs`):
+
+- `server(server_id, name)`, `server_alias(server_id, alias)` (header `Computer:` names)
+- `log_file(file_id, server_id, file_name, source_path, size_bytes, header_computer, tz_id, tz_name, tz_basis, log_level, max_entry_count, max_file_count, sequence, idx, first_line_hash, first/last_ts_utc, line_count, event_count, orphan_lines, unrecognised, last_event_line, last_event_id, is_complete, imported_at)`
+- `event(event_id, file_id, server_id, line_no, ts_utc, ts_local, thread, module, src_line, severity, class_method, message, nested_count, category, conn_id, cs_id, cs_name, replica_set_id, rg_name, uid_db/uid_ver, gvsn_db/gvsn_ver, parent_db/parent_ver, fid, file_name, extension, attributes, is_folder, present, meet_install, usn_reason, error_code, error_code_inner, event_log_id, transfer_type, staged_size, retries, update_type)`. GUIDs are `UUID`; no primary key or indexes (zone maps serve the scans)
+- `event_nested(event_id, nested_text)`: one row per event, lines joined by `\n`, read only on drill-down
+- `pending_orphan(server_id, idx, nested_text)`: roll orphans waiting for Index−1
 - `guid_name(guid, kind, name, source)`, kinds RG / RF / connection / DB GUID / member
 - `connection(conn_id, rg, sending_member, receiving_member)`
 
@@ -261,8 +290,8 @@ Re-applying rules is a single `UPDATE event SET category = …` driven by the ru
 | # | Phase | Outcome |
 |---|---|---|
 | 0 | Samples and spike | **Done** (§1a): both sides of add, modify, collision, rename, bulk delete, name reuse, staging quota, an RDC receive at sev 5, and real `maxEntryCount` rolls on both servers |
-| 1 | Core parser and case DB | Upload → parse → DuckDB, with field extraction from lines and nested records, TzId-based UTC, roll stitching, correlation pass and incremental fingerprints. Proven by unit tests on fragments cut from the samples and by the CLI harness run over `samples/` (counts match the grep figures in §1a; parse speed and DB size recorded) |
-| 2 | Taxonomy | Default rules file, apply/re-apply, `Other (<Module>)` fallback, rule notes |
+| 1 ✅ | Core parser and case DB | Upload → parse → DuckDB, with field extraction from lines and nested records, TzId-based UTC, roll stitching and incremental fingerprints (correlation moved to phase 2, since it sets categories). **Done 2026-11-11:** 40 tests pass; CLI totals match grep exactly (dated lines, nested lines, [ERROR]/[WARN], sends/receives) and every §1a signature count. Proven by unit tests on fragments cut from the samples and by the CLI harness run over `samples/` (counts match the grep figures in §1a; parse speed and DB size recorded) |
+| 2 | Taxonomy | Default rules file, apply/re-apply, `Other (<Module>)` fallback, rule notes, correlation pass (move-out as delete/conflict/update), "drop Plumbing detail" import option |
 | 3 | Main UI | Case open/create, upload, facet pane, chart, aggregate grid, lazy drill-down, event detail |
 | 4 | Name resolution | Config-dump parsing, DB GUID inference, origin/partner/RG/RF dimensions |
 | 5 | Remote collection | AD discovery (incl. SYSVOL/DCs), SMB copy, time-range selection, alternate credentials, collection profiles and top-up, optional event-log collection and `.evtx` upload |
