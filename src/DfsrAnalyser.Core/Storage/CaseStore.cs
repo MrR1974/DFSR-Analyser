@@ -82,6 +82,13 @@ public sealed class CaseStore : IDisposable
         ApplyRules();
     }
 
+    /// <summary>Reloads rules.json (after the user edited it) and re-categorises every event.</summary>
+    public void ReloadAndApplyRules()
+    {
+        UseRules(RuleSet.Load(RulesPath));
+        ApplyRules();
+    }
+
     /// <summary>Re-categorises existing events with the current rules (no re-parse).</summary>
     public void ApplyRules(int? fileId = null)
     {

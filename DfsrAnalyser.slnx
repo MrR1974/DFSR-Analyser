@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/DfsrAnalyser.App/DfsrAnalyser.App.csproj" />
     <Project Path="src/DfsrAnalyser.Cli/DfsrAnalyser.Cli.csproj" />
     <Project Path="src/DfsrAnalyser.Core/DfsrAnalyser.Core.csproj" />
   </Folder>

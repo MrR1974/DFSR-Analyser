@@ -101,7 +101,7 @@ Directory.Build.props        net10.0, nullable, implicit usings
 src/
   DfsrAnalyser.Core          parsing, categorisation, name resolution, case DB access (no UI)
   DfsrAnalyser.Collection    AD discovery, SMB enumeration and copy, incremental tracking   (phase 5)
-  DfsrAnalyser.App           WPF shell, view models, charts, grids                          (phase 3)
+  DfsrAnalyser.App           WPF app (`DfsrAnalyser.exe`): MVVM, ScottPlot chart, tree grid
   DfsrAnalyser.Cli           `dfsra` console harness: import / stats / files / bench
 tests/
   DfsrAnalyser.Tests         xUnit v3: parser, extractor, importer tests on lab log fragments
@@ -291,6 +291,19 @@ Re-applying rules is a single `UPDATE event SET category = …` driven by the ru
 
 ---
 
+### As built (phase 3)
+
+- **Query layer** (`Core/Query`, unit-tested): `EventFilter` (immutable: time range, include-sets per dimension, show hidden, message text) and `CaseQuery`, which runs facets (each ignoring its own selection, selected values first), the stacked time series (top 8 + Other, zero-filled), grid rows per level (count, first/last, peak window with ties resolved to the earliest, 40-bin trend), paged events and event detail. Values are always SQL parameters.
+- **16 dimensions**: group, category, server, severity, RF, RG, file name (searchable), extension, file/folder, innermost error code, event ID, transfer type, origin DB GUID (names in phase 4), connection, module, Class::Method (searchable).
+- **App**: one `CaseSession` serialises all DuckDB work off the UI thread. Each filter change bumps a version and stale results are dropped; changes are debounced 150 ms. Collapsed facets are not queried.
+- **Chart**: click a bar to select its window, drag to select a range, right-click or Alt+Backspace to zoom out (history kept), "All time" to reset. Colours are stable per value for the session and match the grid swatches.
+- **Grid**: flattened virtualised tree (ListView + GridView). Levels are chosen from any dimension (default Category ▸ Server ▸ File name ▸ events). Children load on expand; events page 500 at a time.
+- **Detail**: UTC/local and server-local time, log file and line, category, group and note, decoded fields (GUIDs braced, FID/attributes in hex), full nested detail (or a note that Plumbing detail was dropped).
+- **Case and import**: File ▸ New/Open/Recent case, Import files/folder with progress and cancel; Rules ▸ Edit rules file / Re-apply rules; View ▸ Show hidden categories / Local time (persisted in `%LOCALAPPDATA%\DfsrAnalyser\settings.json`).
+- **Self-check without a person at the screen**: `DfsrAnalyser.exe --case <folder> [--import <path>] --screenshot <png>` opens (and optionally imports into) a case, expands the grid down to an event, then saves three PNGs: default view, zoomed + one-server filter, and stack-by-server / server-first grouping / hidden shown / message search. Used to verify every change to the UI in this phase.
+
+---
+
 ## 8. Phases
 
 | # | Phase | Outcome |
@@ -298,7 +311,7 @@ Re-applying rules is a single `UPDATE event SET category = …` driven by the ru
 | 0 | Samples and spike | **Done** (§1a): both sides of add, modify, collision, rename, bulk delete, name reuse, staging quota, an RDC receive at sev 5, and real `maxEntryCount` rolls on both servers |
 | 1 ✅ | Core parser and case DB | Upload → parse → DuckDB, with field extraction from lines and nested records, TzId-based UTC, roll stitching and incremental fingerprints (correlation moved to phase 2, since it sets categories). **Done 2026-11-11:** 40 tests pass; CLI totals match grep exactly (dated lines, nested lines, [ERROR]/[WARN], sends/receives) and every §1a signature count. Proven by unit tests on fragments cut from the samples and by the CLI harness run over `samples/` (counts match the grep figures in §1a; parse speed and DB size recorded) |
 | 2 ✅ | Taxonomy | Default rules file, apply/re-apply, `Other (<Module>)` fallback, rule notes, correlation pass (move-out as delete/conflict/update), "drop Plumbing detail" import option |
-| 3 | Main UI | Case open/create, upload, facet pane, chart, aggregate grid, lazy drill-down, event detail |
+| 3 ✅ | Main UI | Case open/create, upload, facet pane, chart, aggregate grid, lazy drill-down, event detail |
 | 4 | Name resolution | Config-dump parsing, DB GUID inference, origin/partner/RG/RF dimensions |
 | 5 | Remote collection | AD discovery (incl. SYSVOL/DCs), SMB copy, time-range selection, alternate credentials, collection profiles and top-up, optional event-log collection and `.evtx` upload |
 | 6 | Analysis extras | Top-N, file trace, CSV export |
