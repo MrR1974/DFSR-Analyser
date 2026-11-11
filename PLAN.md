@@ -32,6 +32,9 @@ Domain reference: `DFSR-Debug-Log-Reference.md` (log anatomy, identifiers, lifec
 | Event log | Optional switch: also collect the "DFS Replication" event log and show it on the same timeline |
 | Samples | `samples/` is excluded from git (`.gitignore`). Test fragments are cut from lab logs only |
 | Publishing | Private for now, may go public later. Keep code free of environment-specific names; samples and test fragments must be from lab domains only |
+| File name filter | Wildcard pattern filter on the event's file name (`*`, `?`, case-insensitive, `;`-separated alternatives, `!` to exclude), applied to every view. Added 2026-11-12, phase 6 |
+| Time range entry | From/To date-time entry within the case's total span, in the current UTC/local display, kept in step with chart selection. Added 2026-11-12, phase 6 |
+| Import verification | Manual import (app and CLI) is proven to match live collection of the same logs, event for event. Added 2026-11-12, phase 6 |
 
 ---
 
@@ -224,22 +227,6 @@ Index wrap-around after `maxFileCount` files is handled by also comparing the fi
 
 CLI: `dfsra rules --case <c> apply [file]`, `dfsra rules export-default <path>`, `dfsra stats --case <c> [--all]` (category matrix per server).
 
----|---|
-| Local change | Created, Modified, Deleted (tombstoned), Renamed, Filtered, Skipped temporary, USN-only update, UID tunnelling |
-| Outbound | Update offered (`Join::SubmitUpdate Sent`), File served (`OutConnection::OpenFile`), Staged |
-| Inbound | Update received, Install started, Install retry (`Retries>0`), RAWGET, RDCGET, Transfer failed |
-| Install | Install-rename completed, Install-move completed, Tombstone installed (remote delete), Move-out (delete / conflict / update, from correlation) |
-| Conflict | Conflict check (`LocalDominates Conflicting`), Conflict event 4412 |
-| Session | Connection established, Session committed / in sync, No pending updates, VV request/receive |
-| Initial sync | State change, 4102, 4104, 4112, Pre-existing move-out |
-| Problems | Sharing violation (32/4304), RPC failure (1722 etc.), LDAP/AD failure, Access denied at install, Redundant download (9047, benign) |
-| Config / service | Service start, DC bind (1206), AD poll, Config dump |
-| Staging | High watermark (4202), Cleanup complete (4204), Staged, Staging cleanup task |
-| Throttling | Bandwidth wait |
-| Plumbing (hidden by default) | Async I/O statistics, credit manager, `Task::*`, VV polling, update-worker lifecycle |
-
-Re-applying rules is a single `UPDATE event SET category = …` driven by the rules, so no re-parse is needed. Rules carry the reference's "misleading entry" notes (§11), which are shown in event detail.
-
 ---
 
 ## 5. Name resolution (from logs) — built in phase 4
@@ -325,6 +312,76 @@ The lab VMs are not reachable from the development machine, so the design keeps 
 
 ---
 
+## 7a. Phase 6 scope (planned 2026-11-12)
+
+Phase 6 is split so that the filters, which Top-N, file trace and export all depend on, come first.
+
+### 6a. Filtering and import
+
+**1. Wildcard file name filter**
+
+- `EventFilter.FileNamePattern`: one or more patterns separated by `;`, OR-ed. `*` matches any run of characters and `?` matches one character. Matching is case-insensitive against the event's file name (the leaf name; DFSR lines carry no full path). A leading `!` excludes, e.g. `*.docx;*.xlsx;!~$*`. A pattern without wildcards matches the whole name exactly, as `dir` does (`report.docx`, not `*report*`).
+- SQL: each pattern is translated to `ILIKE ? ESCAPE '\'`, with `%`, `_` and `\` in the name escaped, and is always passed as a parameter. Events without a file name never match an include pattern.
+- It applies everywhere the filter does: facets (including the File name facet's own counts), chart, grid, events, and later Top-N, trace and export. The File name facet's search box accepts the same wildcards to narrow its value list.
+- UI: a "File name" box at the top of the facet pane with a clear button and a tooltip giving the syntax; debounced like other filter changes; shown in the active-filter summary; cleared by "Clear all".
+- CLI: `--file <pattern>` on `stats` (and on the new `export` in 6b), for testing without the UI.
+- Tests: pattern translation (escaping, `?`, `!`, `;`, no-wildcard exact match), filter SQL on the sample fragments (e.g. `file_00*.txt` counts against grep).
+
+**2. Time range entry**
+
+- Toolbar From / To fields (date picker plus a `HH:mm:ss` time box) showing the case's total span beside them ("logs span 2026-11-11 11:47 – 13:16"). Times are in the current display zone (UTC or local) and converted to UTC for the filter; From is inclusive, To exclusive.
+- Values are clamped to the total span; From ≥ To is shown as an error and not applied. Apply with Enter or an Apply button. "All time" resets.
+- Two-way sync: dragging or clicking on the chart fills the fields, typing in the fields moves the chart. Both go through the existing zoom history, so Alt+Backspace steps back over typed ranges too. Toggling UTC/local re-displays the same instant.
+- Quick presets beside the fields: last 15 min / 1 h / 24 h *of the logs* (relative to the latest event, not to now).
+- CLI: `--from` / `--to` on `stats` (local time by default, `--utc` to use UTC), matching `collect`.
+
+**3. Import dialog and diagnostics** (parity with collection; needed for the import tests)
+
+- Import files/folder opens a small dialog: **server name** taken from the log header (default) / from each sub-folder's name / one name for all files; "drop Plumbing detail"; the list of files found grouped by server, with Index range and time span, before anything is written.
+- Every import writes `<case>\logs\import-*.log` (each file's decision: imported / resumed / unchanged / failed with reason, Index, span, events) and ends with a per-server summary. Failures don't stop the other files.
+- Warn when a header `Computer:` name differs from the chosen server name, or when one folder holds logs from two computers.
+
+**4. Integrity tooling**
+
+- `dfsra verify --case <c>`: duplicate event ids, overlapping or missing Indexes per server (allowing gaps outside the collected range), pending roll orphans, files neither complete nor active, events outside their file's span. Exits non-zero on a defect.
+- `dfsra compare --case <a> --case <b>`: per server and per file (Index + first-line hash), event counts and category counts for the files both cases hold, plus files only in one. Used to prove import ≡ collection.
+
+### 6b. Analysis extras
+
+Top-N, file trace and CSV export as described in §7, all honouring the new file name and time range filters.
+
+### Import test proposal
+
+Live collection has been verified; import has only been checked locally by the CLI against the samples (phase 1). The tests below prove manual ingestion in the app, and that it gives the same case as collection. Pass criteria throughout: `dfsra verify` reports no defects, and `dfsra compare` shows identical event and category counts for shared files.
+
+**Local (Claude, before handing over)**
+
+- Automated: import the sample tree through the importer as the app calls it, in order, reversed (later Indexes first, so roll orphans wait and are stitched afterwards) and shuffled. All three give identical event ids and counts.
+- `compare` the sample import against the lab-collected cases (`samples/Cases/Lab1`, `Lab2`) for the files they share.
+- App self-check: `--import` + `--screenshot` with the new dialog options, and screenshots of the file name filter and time range fields.
+
+**Lab (manual, new checklist section E in `docs/Lab-Test-Checklist.md`)**
+
+| # | Test | Expected |
+|---|---|---|
+| E1 | Copy `C:\Windows\debug\Dfsr*.log*` from each server into `<share>\<server>\` (include the active log) | — |
+| E2 | App: new case → Import folder → server name from sub-folder | One server per folder; file list and spans shown before import; per-server summary; `import-*.log` written |
+| E3 | Same folder into a second case with `dfsra import --per-folder` | `compare` with E2: identical |
+| E4 | Collect the same servers live into a third case over the same span | `compare` with E2: identical for shared files |
+| E5 | Re-import the E2 folder | Every file *unchanged*; no new events |
+| E6 | Later, copy again (active log grown, maybe rolled to `.gz`) and import | Active log *resumed*; `.gz` recognised as the same Index; no duplicates (`verify`) |
+| E7 | Import into the collected case (E4) | Shared files skipped; only new files added |
+| E8 | Import files individually, newest Index first, then the rest | Same counts as E2 (orphans stitched) |
+| E9 | Server name: import one server's logs with header name and with a different fixed name | Header mismatch warning; events filed under the chosen name |
+| E10 | Bad input: a non-DFSR `.log`, a truncated `.gz`, an empty file, a file locked by another process | Each listed as failed with a reason; the others import |
+| E11 | Cancel mid-import, then import again | Completes; `verify` clean, counts equal E2 |
+| E12 | `.evtx` import for both servers (also covers DC01's event log while C8 is blocked) | Records on the timeline under *Event log* |
+| E13 | Filters on the imported case: file name `file_00*.txt`, `*.txt;!file_1*`, and a typed time range inside the span | Counts match `dfsra stats --file … --from … --to …` |
+
+The user pastes back the `import-*.log`, `verify` and `compare` output for review, as in the collection rounds.
+
+---
+
 ## 8. Phases
 
 | # | Phase | Outcome |
@@ -335,7 +392,7 @@ The lab VMs are not reachable from the development machine, so the design keeps 
 | 3 ✅ | Main UI | Case open/create, upload, facet pane, chart, aggregate grid, lazy drill-down, event detail |
 | 4 ✅ | Name resolution | Config-dump parsing, DB GUID inference, origin/partner/RG/RF dimensions |
 | 5 ✅ (lab-verified except DC event log) | Remote collection | AD discovery (incl. SYSVOL/DCs), SMB copy, time-range selection, alternate credentials, collection profiles and top-up, optional event-log collection and `.evtx` upload |
-| 6 | Analysis extras | Top-N, file trace, CSV export |
+| 6 | Filtering, import verification, analysis extras | 6a: wildcard file name filter, time range entry, import dialog and diagnostics, `dfsra verify`/`compare`, import test round (§7a). 6b: Top-N, file trace, CSV export |
 | 7 | Packaging | Self-contained per-user installer, app icon, README |
 
 ---
