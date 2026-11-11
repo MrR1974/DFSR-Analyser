@@ -133,6 +133,56 @@ internal static class Schema
             nested_text VARCHAR NOT NULL
         );
 
+        -- ---- Names resolved from the logs (rebuilt after every import by NameResolver) ----
+        CREATE TABLE IF NOT EXISTS name_rg (
+            guid   UUID PRIMARY KEY,
+            name   VARCHAR NOT NULL,
+            source VARCHAR NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS name_rf (
+            guid    UUID PRIMARY KEY,
+            name    VARCHAR NOT NULL,
+            rg_guid UUID,
+            source  VARCHAR NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS name_member (
+            guid UUID PRIMARY KEY,
+            name VARCHAR NOT NULL
+        );
+        -- A connection seen from one server: the same GUID is inbound on one side, outbound on the other.
+        CREATE TABLE IF NOT EXISTS name_conn (
+            conn_id      UUID NOT NULL,
+            server_id    INTEGER NOT NULL,
+            partner      VARCHAR NOT NULL,
+            partner_guid UUID,
+            inbound      BOOLEAN,
+            enabled      BOOLEAN,
+            rdc_enabled  BOOLEAN,
+            rg_guid      UUID,
+            PRIMARY KEY (conn_id, server_id)
+        );
+        -- DFSR database GUID (one per volume per server) -> the server whose local changes carry it.
+        CREATE TABLE IF NOT EXISTS name_db (
+            guid      UUID PRIMARY KEY,
+            server_id INTEGER NOT NULL,
+            server    VARCHAR NOT NULL,
+            evidence  BIGINT NOT NULL,
+            ambiguous BOOLEAN NOT NULL
+        );
+        -- Replicated folder configuration per server, from the latest dump.
+        CREATE TABLE IF NOT EXISTS rf_config (
+            server_id        INTEGER NOT NULL,
+            rf_guid          UUID NOT NULL,
+            root_path        VARCHAR,
+            staging_size_mb  INTEGER,
+            conflict_size_mb INTEGER,
+            is_primary       BOOLEAN,
+            read_only        BOOLEAN,
+            enabled          BOOLEAN,
+            file_filter      VARCHAR,
+            PRIMARY KEY (server_id, rf_guid)
+        );
+
         -- The categories of the rule set last applied (display order, group, visibility, notes).
         CREATE TABLE IF NOT EXISTS category (
             name   VARCHAR PRIMARY KEY,

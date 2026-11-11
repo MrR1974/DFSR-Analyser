@@ -240,12 +240,24 @@ Re-applying rules is a single `UPDATE event SET category = …` driven by the ru
 
 ---
 
-## 5. Name resolution (from logs)
+## 5. Name resolution (from logs) — built in phase 4
 
-1. Config dumps: `DfsrReplicationGroup` (RG GUID → name), `DfsrReplicatedFolder` (RF GUID → name), `DfsrConnection` (`ConnectionGuid` → partner, inbound/outbound) and `DfsrMember`.
-2. Inline `csName`/`rgName` fields.
-3. **DB GUID → server inference:** a GVSN produced by a local change (`UsnConsumer::CreateNewRecord`, `UpdateIdRecord`, `TombstoneOrDelete`) on server X carries X's DB GUID for that volume. Record GUID → X (and RF/volume) with a confidence count.
-4. Unresolved GUIDs are shown abbreviated (`{5CB1…}`), with the full GUID in a tooltip.
+`Core/Names/NameResolver` rebuilds small name tables after every import (≈0.1 s on the samples; `dfsra names` runs it on demand and prints the result):
+
+| Table | Source |
+|---|---|
+| `name_rg` (RG GUID → name) | `[[ DfsrReplicationGroup ]]` dumps; inline `replicaSetId`/`rgName` fills gaps |
+| `name_rf` (RF GUID → name, RG) | `[[ DfsrReplicatedFolder ]]` dumps; inline `csId`/`csName` fills gaps |
+| `name_member` (member GUID → server) | `[[ DfsrMember ]]` and each connection's `PartnerGuid`/`PartnerName` (one member object per RG, so a server has several) |
+| `name_conn` (connection, **per logging server**) | `[[ DfsrConnection ]]`: partner, `Inbound`, enabled, RDC, RG. The same GUID is *inbound* on one side and *outbound* on the other |
+| `name_db` (DB GUID → server) | **Inferred**: GVSN DB GUID of local database writes (`UsnConsumer::CreateNewRecord/UpdateIdRecord/TombstoneOrDelete`, `LDB` lines). `UpdateUsnOnly` is excluded (it keeps a possibly remote GVSN). Evidence count and an ambiguity flag are kept |
+| `rf_config` (per server) | RF dump: root path, staging and conflict quotas, primary, read-only, enabled, file filter |
+
+The dump parser walks `CPAR` lines per (file, thread) in line order; later dumps override earlier ones.
+
+**Dimensions using names**: *Origin server* (GVSN), *Created on server* (UID), *Partner*, *Connection* ("from X" / "to Y"), *Direction*, *Replicated folder* and *Replication group* (resolved even on lines that carry only GUIDs). GUIDs no log explains show as `unknown {2314971A…}`, e.g. a partner whose logs were not collected. Each dimension declares the name tables it needs and queries join only those. **Event detail** shows names beside GUIDs ("from DFSRDC01", "last changed on DFSRMEMBER01", "created on …", RF/RG names).
+
+**Samples**: 2 RGs (including SYSVOL as *Domain System Volume*), 2 RFs, 4 directional connection views, both DB GUIDs mapped with no ambiguity, RF config showing the 4096 MB staging quota behind the 4202 events. Stacking the chart by origin server shows the first bulk add originating on DFSRDC01 and the delete/re-add on DFSRMEMBER01.
 
 ---
 
@@ -312,7 +324,7 @@ Re-applying rules is a single `UPDATE event SET category = …` driven by the ru
 | 1 ✅ | Core parser and case DB | Upload → parse → DuckDB, with field extraction from lines and nested records, TzId-based UTC, roll stitching and incremental fingerprints (correlation moved to phase 2, since it sets categories). **Done 2026-11-11:** 40 tests pass; CLI totals match grep exactly (dated lines, nested lines, [ERROR]/[WARN], sends/receives) and every §1a signature count. Proven by unit tests on fragments cut from the samples and by the CLI harness run over `samples/` (counts match the grep figures in §1a; parse speed and DB size recorded) |
 | 2 ✅ | Taxonomy | Default rules file, apply/re-apply, `Other (<Module>)` fallback, rule notes, correlation pass (move-out as delete/conflict/update), "drop Plumbing detail" import option |
 | 3 ✅ | Main UI | Case open/create, upload, facet pane, chart, aggregate grid, lazy drill-down, event detail |
-| 4 | Name resolution | Config-dump parsing, DB GUID inference, origin/partner/RG/RF dimensions |
+| 4 ✅ | Name resolution | Config-dump parsing, DB GUID inference, origin/partner/RG/RF dimensions |
 | 5 | Remote collection | AD discovery (incl. SYSVOL/DCs), SMB copy, time-range selection, alternate credentials, collection profiles and top-up, optional event-log collection and `.evtx` upload |
 | 6 | Analysis extras | Top-N, file trace, CSV export |
 | 7 | Packaging | Self-contained per-user installer, app icon, README |

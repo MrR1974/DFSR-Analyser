@@ -20,6 +20,8 @@ internal static class Program
               signature counts, field coverage and top methods.
           dfsra rules --case <folder> apply [<rules.json>]
               Re-categorise the case with its rules.json, or with the given file (which becomes the case's rules).
+          dfsra names --case <folder>
+              Re-resolve GUIDs to names (runs automatically after import) and print what was found.
           dfsra rules export-default <path>
               Write the built-in default rules to a file.
           dfsra files --case <folder>
@@ -71,6 +73,7 @@ internal static class Program
                 "import" => RunImport(casePath!, server, perFolder, dropPlumbing, inputs),
                 "stats" => RunStats(casePath!, all),
                 "rules" => RunRules(casePath, inputs),
+                "names" => RunNames(casePath!),
                 "files" => RunFiles(casePath!),
                 "bench" => RunBench(inputs),
                 "sql" => RunSql(casePath!, string.Join(' ', inputs)),
@@ -175,6 +178,38 @@ internal static class Program
                 Console.WriteLine($"  {"  (hidden: " + group.Where(r => r.Hidden).Select(r => r.Category).Distinct().Count() + " categories)",-46}" +
                                   string.Concat(servers.Select(s => $"{group.Where(r => r.Hidden && r.Server == s).Sum(r => r.Count),14:N0}")));
         }
+    }
+
+    private static int RunNames(string casePath)
+    {
+        using var store = CaseStore.Open(casePath);
+        var sw = Stopwatch.StartNew();
+        var summary = new Core.Names.NameResolver(store).Resolve();
+        Console.WriteLine($"Resolved in {sw.Elapsed.TotalSeconds:F2}s: {summary}");
+
+        void Section(string title, string sql)
+        {
+            Console.WriteLine($"\n{title}");
+            foreach (var row in store.Query(sql))
+                Console.WriteLine("  " + string.Join("  |  ", row.Select(v => v switch { null => "-", Guid g => "{" + g.ToString().ToUpperInvariant() + "}", _ => v.ToString() })));
+        }
+
+        Section("Replication groups", "SELECT name, guid, source FROM name_rg ORDER BY name");
+        Section("Replicated folders", "SELECT f.name, g.name AS rg, f.guid, f.source FROM name_rf f LEFT JOIN name_rg g ON g.guid = f.rg_guid ORDER BY f.name");
+        Section("Members", "SELECT name, guid FROM name_member ORDER BY name");
+        Section("Connections (as seen by each server)", """
+            SELECT s.name AS server, CASE WHEN c.inbound THEN 'from ' ELSE 'to ' END || c.partner AS connection,
+                   c.enabled, c.rdc_enabled, g.name AS rg, c.conn_id
+            FROM name_conn c JOIN server s ON s.server_id = c.server_id LEFT JOIN name_rg g ON g.guid = c.rg_guid
+            ORDER BY server, connection
+            """);
+        Section("DB GUID -> server (inferred from local changes)", "SELECT server, guid, evidence, ambiguous FROM name_db ORDER BY server");
+        Section("Replicated folder configuration", """
+            SELECT s.name AS server, f.name AS rf, c.root_path, c.staging_size_mb, c.conflict_size_mb, c.is_primary, c.file_filter
+            FROM rf_config c JOIN server s ON s.server_id = c.server_id LEFT JOIN name_rf f ON f.guid = c.rf_guid
+            ORDER BY server, rf
+            """);
+        return 0;
     }
 
     private static int RunRules(string? casePath, List<string> inputs)

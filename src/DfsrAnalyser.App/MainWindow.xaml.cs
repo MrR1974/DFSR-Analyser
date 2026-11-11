@@ -201,16 +201,15 @@ public partial class MainWindow : Window
             await SavePngAsync(Path.Combine(Path.GetDirectoryName(png)!, Path.GetFileNameWithoutExtension(png) + "-filtered.png"));
         }
 
-        // Third image: the other controls — stack by server, server-first grouping, hidden categories
-        // shown, and a message search.
+        // Third image: resolved names — stacked by origin server, grouped by connection then category,
+        // limited to the Local change / Outbound / Inbound groups.
         _vm.ResetTimeCommand.Execute(null);
         _vm.ClearFiltersCommand.Execute(null);
-        _vm.StackBy = Dimensions.Server;
-        _vm.Level1 = _vm.LevelChoices.First(l => l.Dimension == Dimensions.Server);
-        _vm.Level2 = _vm.OptionalLevelChoices.First(l => l.Dimension == Dimensions.Group);
-        _vm.Level3 = _vm.OptionalLevelChoices.First(l => l.Dimension == Dimensions.Category);
-        _vm.ShowHidden = true;
-        _vm.MessageText = "RDCGET";
+        _vm.StackBy = Dimensions.OriginServer;
+        _vm.Level1 = _vm.LevelChoices.First(l => l.Dimension == Dimensions.Connection);
+        _vm.Level2 = _vm.OptionalLevelChoices.First(l => l.Dimension == Dimensions.Category);
+        _vm.Level3 = _vm.OptionalLevelChoices.First(l => l.Dimension is null);
+        _vm.Filter = _vm.Filter.WithValues(Dimensions.Group.Key, ["Local change", "Outbound", "Inbound"]);
         await Task.Delay(400);
         await _vm.RefreshAsync();
         foreach (var r in _vm.Rows.Where(r => r.CanExpand).ToList()) await _vm.ExpandAsync(r);

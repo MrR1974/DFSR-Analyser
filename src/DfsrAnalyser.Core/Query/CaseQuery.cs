@@ -26,16 +26,38 @@ public sealed class CaseQuery(CaseStore store)
 {
     public const int TrendBins = 40;
 
-    private const string From = """
+    private const string BaseFrom = """
         FROM event e
         JOIN server s ON s.server_id = e.server_id
         LEFT JOIN category c ON c.name = e.category
         """;
 
+    /// <summary>Name-table joins, in dependency order (nrg uses nrf). Added only when a dimension needs them.</summary>
+    private static readonly (string Alias, string Sql)[] NameJoins =
+    [
+        ("od", "LEFT JOIN name_db od ON od.guid = e.gvsn_db"),
+        ("ud", "LEFT JOIN name_db ud ON ud.guid = e.uid_db"),
+        ("nc", "LEFT JOIN name_conn nc ON nc.conn_id = e.conn_id AND nc.server_id = e.server_id"),
+        ("nrf", "LEFT JOIN name_rf nrf ON nrf.guid = e.cs_id"),
+        ("nrg", "LEFT JOIN name_rg nrg ON nrg.guid = coalesce(e.replica_set_id, nrf.rg_guid)"),
+    ];
+
+    private static string FromFor(IEnumerable<Dimension> dims)
+    {
+        var needed = dims.SelectMany(d => d.Joins).ToHashSet(StringComparer.Ordinal);
+        if (needed.Count == 0) return BaseFrom;
+        return BaseFrom + "\n" + string.Join("\n", NameJoins.Where(j => needed.Contains(j.Alias)).Select(j => j.Sql));
+    }
+
+    private static string AllNamesFrom => BaseFrom + "\n" + string.Join("\n", NameJoins.Select(j => j.Sql));
+
     // ------------------------------------------------------------------ filter SQL
 
-    private static (string Where, List<object?> Args) WhereClause(EventFilter f, IEnumerable<(Dimension Dim, string Value)>? path = null)
+    /// <summary>FROM (with the joins every referenced dimension needs), WHERE and its parameters.</summary>
+    private static (string From, string Where, List<object?> Args) WhereClause(
+        EventFilter f, IEnumerable<(Dimension Dim, string Value)>? path = null, params Dimension[] extra)
     {
+        var dims = new List<Dimension>(extra);
         var parts = new List<string>();
         var args = new List<object?>();
         if (f.FromUtc is { } from) { parts.Add("e.ts_utc >= ?"); args.Add(from); }
@@ -46,16 +68,18 @@ public sealed class CaseQuery(CaseStore store)
         {
             if (values.Count == 0) continue;
             var dim = Dimensions.Get(key);
+            dims.Add(dim);
             parts.Add($"{dim.Sql} IN ({string.Join(", ", values.Select(_ => "?"))})");
             args.AddRange(values);
         }
         if (path is not null)
             foreach (var (dim, value) in path)
             {
+                dims.Add(dim);
                 parts.Add($"{dim.Sql} = ?");
                 args.Add(value);
             }
-        return (parts.Count == 0 ? "" : "WHERE " + string.Join(" AND ", parts), args);
+        return (FromFor(dims), parts.Count == 0 ? "" : "WHERE " + string.Join(" AND ", parts), args);
     }
 
     // ------------------------------------------------------------------ extent and bucketing
@@ -64,8 +88,8 @@ public sealed class CaseQuery(CaseStore store)
     public (DateTime Min, DateTime Max)? Extent(EventFilter f, bool ignoreTime = false)
     {
         var filter = ignoreTime ? f with { FromUtc = null, ToUtc = null } : f;
-        var (where, args) = WhereClause(filter);
-        using var cmd = store.Command($"SELECT min(e.ts_utc), max(e.ts_utc) {From} {where}", [.. args]);
+        var (from, where, args) = WhereClause(filter);
+        using var cmd = store.Command($"SELECT min(e.ts_utc), max(e.ts_utc) {from} {where}", [.. args]);
         using var r = cmd.ExecuteReader();
         if (!r.Read() || r.IsDBNull(0)) return null;
         return (r.GetDateTime(0), r.GetDateTime(1));
@@ -102,8 +126,8 @@ public sealed class CaseQuery(CaseStore store)
     public List<FacetValue> Facet(Dimension dim, EventFilter f, int limit = 50, string? search = null)
     {
         var selected = f.Selected(dim.Key);
-        var (where, args) = WhereClause(f.Without(dim.Key));
-        var sb = new StringBuilder($"SELECT {dim.Sql} AS v, count(*) AS n {From} {where}");
+        var (from, where, args) = WhereClause(f.Without(dim.Key), null, dim);
+        var sb = new StringBuilder($"SELECT {dim.Sql} AS v, count(*) AS n {from} {where}");
         if (!string.IsNullOrWhiteSpace(search))
         {
             sb.Append(where.Length == 0 ? " WHERE " : " AND ").Append($"contains(lower({dim.Sql}), lower(?))");
@@ -132,10 +156,10 @@ public sealed class CaseQuery(CaseStore store)
     {
         var extent = Extent(f);
         if (extent is null) return new TimeSeries([], bucket, []);
-        var (where, args) = WhereClause(f);
+        var (from, where, args) = WhereClause(f, null, stack);
 
         var top = new List<string>();
-        using (var cmd = store.Command($"SELECT {stack.Sql} AS k, count(*) n {From} {where} GROUP BY k ORDER BY n DESC, k LIMIT {topN + 1}", [.. args]))
+        using (var cmd = store.Command($"SELECT {stack.Sql} AS k, count(*) n {from} {where} GROUP BY k ORDER BY n DESC, k LIMIT {topN + 1}", [.. args]))
         using (var r = cmd.ExecuteReader())
             while (r.Read()) top.Add(r.GetString(0));
         var keys = top.Count > topN ? top[..topN] : top;
@@ -155,7 +179,7 @@ public sealed class CaseQuery(CaseStore store)
         allArgs.AddRange(args);
         var sql = $"""
             SELECT b, {keySql} AS k, count(*) FROM (
-                SELECT {BucketSql(bucket)} AS b, {stack.Sql} AS raw {From} {where}
+                SELECT {BucketSql(bucket)} AS b, {stack.Sql} AS raw {from} {where}
             ) x
             GROUP BY b, k
             """;
@@ -179,10 +203,10 @@ public sealed class CaseQuery(CaseStore store)
     /// </summary>
     public List<GroupRow> Groups(EventFilter f, IReadOnlyList<(Dimension Dim, string Value)> path, Dimension dim, TimeSpan bucket, int limit = 500)
     {
-        var (where, args) = WhereClause(f, path);
+        var (from, where, args) = WhereClause(f, path, dim);
         var stats = new List<(string V, long N, DateTime First, DateTime Last)>();
         using (var cmd = store.Command(
-                   $"SELECT {dim.Sql} AS v, count(*) n, min(e.ts_utc), max(e.ts_utc) {From} {where} GROUP BY v ORDER BY n DESC, v LIMIT {limit}", [.. args]))
+                   $"SELECT {dim.Sql} AS v, count(*) n, min(e.ts_utc), max(e.ts_utc) {from} {where} GROUP BY v ORDER BY n DESC, v LIMIT {limit}", [.. args]))
         using (var r = cmd.ExecuteReader())
             while (r.Read()) stats.Add((r.GetString(0), Convert.ToInt64(r.GetValue(1)), r.GetDateTime(2), r.GetDateTime(3)));
         if (stats.Count == 0) return [];
@@ -203,7 +227,7 @@ public sealed class CaseQuery(CaseStore store)
         using (var cmd = store.Command($"""
                    SELECT v, min(b) FILTER (WHERE n = mx), max(mx) FROM (
                        SELECT v, b, n, max(n) OVER (PARTITION BY v) AS mx FROM (
-                           SELECT {dim.Sql} AS v, {BucketSql(bucket)} AS b, count(*) AS n {From} {whereValues} GROUP BY v, b
+                           SELECT {dim.Sql} AS v, {BucketSql(bucket)} AS b, count(*) AS n {from} {whereValues} GROUP BY v, b
                        )
                    ) GROUP BY v
                    """, [.. valueArgs]))
@@ -214,7 +238,7 @@ public sealed class CaseQuery(CaseStore store)
                    SELECT {dim.Sql} AS v,
                           CAST(floor(epoch_ms(e.ts_utc - TIMESTAMP '{rangeStartSql}') / {binMs.ToString(CultureInfo.InvariantCulture)}) AS INTEGER) AS bin,
                           count(*)
-                   {From} {whereValues} GROUP BY v, bin
+                   {from} {whereValues} GROUP BY v, bin
                    """, [.. valueArgs]))
         using (var r = cmd.ExecuteReader())
             while (r.Read())
@@ -243,17 +267,17 @@ public sealed class CaseQuery(CaseStore store)
 
     public long CountEvents(EventFilter f, IReadOnlyList<(Dimension Dim, string Value)>? path = null)
     {
-        var (where, args) = WhereClause(f, path);
-        return store.Scalar<long>($"SELECT count(*) {From} {where}", [.. args]);
+        var (from, where, args) = WhereClause(f, path);
+        return store.Scalar<long>($"SELECT count(*) {from} {where}", [.. args]);
     }
 
     /// <summary>A page of events in time order (ties broken by server log order).</summary>
     public List<EventRow> Events(EventFilter f, IReadOnlyList<(Dimension Dim, string Value)>? path, int offset, int limit)
     {
-        var (where, args) = WhereClause(f, path);
+        var (from, where, args) = WhereClause(f, path);
         var rows = new List<EventRow>();
         using var cmd = store.Command(
-            $"SELECT {EventColumns} {From} {where} ORDER BY e.ts_utc, e.event_id LIMIT {limit} OFFSET {offset}", [.. args]);
+            $"SELECT {EventColumns} {from} {where} ORDER BY e.ts_utc, e.event_id LIMIT {limit} OFFSET {offset}", [.. args]);
         using var r = cmd.ExecuteReader();
         while (r.Read()) rows.Add(ReadEvent(r));
         return rows;
@@ -266,8 +290,9 @@ public sealed class CaseQuery(CaseStore store)
                    e.thread, e.module, e.src_line, e.conn_id, e.cs_id, e.cs_name, e.replica_set_id, e.rg_name,
                    e.uid_db, e.uid_ver, e.gvsn_db, e.gvsn_ver, e.parent_db, e.parent_ver, e.fid, e.extension, e.attributes,
                    e.is_folder, e.present, e.meet_install, e.usn_reason, e.error_code, e.error_code_inner, e.event_log_id,
-                   e.transfer_type, e.staged_size, e.retries, e.update_type
-            {From}
+                   e.transfer_type, e.staged_size, e.retries, e.update_type,
+                   od.server, ud.server, nc.partner, nc.inbound, nrf.name, nrg.name
+            {AllNamesFrom}
             JOIN log_file f ON f.file_id = e.file_id
             LEFT JOIN event_nested n ON n.event_id = e.event_id
             WHERE e.event_id = ?
@@ -279,15 +304,20 @@ public sealed class CaseQuery(CaseStore store)
         string? Version(int g, int v) => S(g) is { } guid ? $"{{{guid.ToUpperInvariant()}}}-v{S(v)}" : null;
 
         // Column indexes: 0-8 EventColumns, 9 grp, 10 note, 11 ts_local, 12 line_no, 13 log file name,
-        // 14 nested_dropped, 15 nested_text, 16.. event fields in SELECT order.
+        // 14 nested_dropped, 15 nested_text, 16-43 event fields in SELECT order, 44-49 resolved names
+        // (origin server, created-on server, partner, inbound, RF name, RG name).
         string? G(int i) => S(i) is { } g ? "{" + g.ToUpperInvariant() + "}" : null;
+        string? Named(string? value, string? name) => value is null ? null : name is null ? value : $"{value}   ({name})";
+        var direction = r.IsDBNull(47) ? null : r.GetBoolean(47) ? "from " : "to ";
         var fields = new List<(string, string?)>
         {
             ("Thread", S(16)), ("Module", S(17)), ("Source line", S(18)),
-            ("Connection", G(19)),
-            ("Replicated folder", S(21) is { } rf ? $"{rf}  {G(20)}" : G(20)),
-            ("Replication group", S(23) is { } rg ? (G(22) is { } rgId ? $"{rg}  {rgId}" : rg) : G(22)),
-            ("UID", Version(24, 25)), ("GVSN", Version(26, 27)), ("Parent", Version(28, 29)),
+            ("Connection", Named(G(19), S(46) is { } partner ? direction + partner : null)),
+            ("Replicated folder", Named(G(20), S(21) ?? S(48))),
+            ("Replication group", S(23) is { } rg ? (G(22) is { } rgId ? $"{rgId}   ({rg})" : rg) : S(49)),
+            ("UID", Named(Version(24, 25), S(45) is { } c ? "created on " + c : null)),
+            ("GVSN", Named(Version(26, 27), S(44) is { } o ? "last changed on " + o : null)),
+            ("Parent", Version(28, 29)),
             ("FID", r.IsDBNull(30) ? null : "0x" + r.GetInt64(30).ToString("X", CultureInfo.InvariantCulture)),
             ("Extension", S(31)),
             ("Attributes", r.IsDBNull(32) ? null : "0x" + r.GetInt32(32).ToString("X", CultureInfo.InvariantCulture)),

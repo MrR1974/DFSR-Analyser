@@ -52,7 +52,7 @@ public sealed partial class MainViewModel : ObservableObject
         _level3 = OptionalLevelChoices.First(l => l.Dimension == Dimensions.FileName);
         _stackBy = Dimensions.Category;
 
-        var expanded = new HashSet<Dimension> { Dimensions.Group, Dimensions.Category, Dimensions.Server, Dimensions.Severity };
+        var expanded = new HashSet<Dimension> { Dimensions.Group, Dimensions.Category, Dimensions.Server, Dimensions.OriginServer, Dimensions.Connection };
         foreach (var d in Dimensions.All)
             Facets.Add(new FacetViewModel(d, this, expanded.Contains(d)));
         foreach (var r in _settings.RecentCases) RecentCases.Add(r);

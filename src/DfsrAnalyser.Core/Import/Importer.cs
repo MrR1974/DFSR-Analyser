@@ -127,6 +127,9 @@ public sealed class Importer(CaseStore store)
                 if (plans[i].Outcome == FileOutcome.Imported) store.DeleteFile(plans[i].Record.FileId);
             }
         }
+
+        // New dumps or local changes may name more GUIDs; the name tables are small, so rebuild them.
+        if (committed > 0) new Names.NameResolver(store).Resolve();
         return results;
     }
 
