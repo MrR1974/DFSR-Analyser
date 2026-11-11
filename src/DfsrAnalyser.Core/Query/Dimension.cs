@@ -52,6 +52,8 @@ public static class Dimensions
     public static readonly Dimension EventLogId = new("eventid", "Event ID", OrNone("e.event_log_id"));
     public static readonly Dimension TransferType = new("transfer", "Transfer type", OrNone("e.transfer_type"));
     public static readonly Dimension OriginDb = new("origindb", "Origin DB GUID", OrNone("e.gvsn_db"));
+    public static readonly Dimension Source = new("source", "Source",
+        "CASE WHEN e.module = 'EVTLOG' THEN 'Event log' ELSE 'Debug log' END");
     public static readonly Dimension Module = new("module", "Module", "e.module");
     public static readonly Dimension ClassMethod = new("method", "Class::Method", "e.class_method", Searchable: true);
 
@@ -60,7 +62,7 @@ public static class Dimensions
     [
         Group, Category, Server, Severity, OriginServer, CreatedOn, Partner, Connection, Direction,
         ReplicatedFolder, ReplicationGroup, FileName, Extension, Kind, ErrorCode, EventLogId, TransferType,
-        OriginDb, Module, ClassMethod,
+        OriginDb, Source, Module, ClassMethod,
     ];
 
     public static Dimension Get(string key) =>

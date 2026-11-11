@@ -179,6 +179,7 @@ public sealed partial class MainViewModel : ObservableObject
             IsCaseOpen = true;
             _zoomHistory.Clear();
             OnPropertyChanged(nameof(CanZoomOut));
+            LoadProfileNames();
             Filter = new EventFilter { ShowHidden = ShowHidden };
         }
         catch (Exception ex)
@@ -273,6 +274,79 @@ public sealed partial class MainViewModel : ObservableObject
 
     [RelayCommand]
     private void Cancel() => _importCts?.Cancel();
+
+    // ------------------------------------------------------------------ remote collection
+
+    /// <summary>The open case (screenshot mode drives the Collect dialog with it).</summary>
+    internal CaseSession? Session => _session;
+
+    /// <summary>Names of the collection profiles saved in the open case (for Collect ▸ Top up).</summary>
+    public ObservableCollection<string> ProfileNames { get; } = [];
+
+    private void LoadProfileNames()
+    {
+        ProfileNames.Clear();
+        if (_session is null) return;
+        try
+        {
+            foreach (var p in Core.Collection.CaseSettings.Load(_session.Folder).Profiles) ProfileNames.Add(p.Name);
+        }
+        catch (Exception ex) when (ex is IOException or System.Text.Json.JsonException)
+        {
+            StatusText = $"{Core.Collection.CaseSettings.FileName} could not be read: {ex.Message}";
+        }
+    }
+
+    [RelayCommand]
+    private void OpenCollect() => ShowCollect(null);
+
+    [RelayCommand]
+    private void TopUp(string profile) => ShowCollect(profile);
+
+    private void ShowCollect(string? profile)
+    {
+        if (_session is null)
+        {
+            MessageBox.Show("Create or open a case first (File menu).", "Collect", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        var collected = false;
+        var vm = new CollectViewModel(_session, () => collected = true, profile);
+        new CollectWindow(vm) { Owner = Application.Current.MainWindow }.ShowDialog();
+        LoadProfileNames();
+        if (collected) RefreshAsync().Forget();
+    }
+
+    [RelayCommand]
+    private async Task ImportEventLogFile()
+    {
+        if (!await EnsureCaseAsync()) return;
+        var dlg = new OpenFileDialog { Title = "Import an exported DFS Replication event log", Filter = "Event logs (*.evtx)|*.evtx", Multiselect = true };
+        if (dlg.ShowDialog() != true) return;
+        var guess = Path.GetFileNameWithoutExtension(dlg.FileNames[0]).Split('-', '_', ' ', '.')[0].ToUpperInvariant();
+        var server = InputWindow.Ask(Application.Current.MainWindow, "Import event log", "Which server is this event log from?", guess);
+        if (server is null) return;
+        IsBusy = true;
+        BusyText = "Importing event log…";
+        try
+        {
+            var count = await _session!.RunAsync((store, _) =>
+            {
+                var source = new Collection.WindowsEventLogSource();
+                return dlg.FileNames.Sum(f => store.ImportEventLog(server, source.ReadFile(f).ToList()));
+            });
+            StatusText = $"Imported {count:N0} event-log record(s) for {server}.";
+        }
+        catch (Exception ex)
+        {
+            ShowError("Event log import failed", ex);
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+        await RefreshAsync();
+    }
 
     // ------------------------------------------------------------------ rules
 

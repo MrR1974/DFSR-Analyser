@@ -100,9 +100,11 @@ global.json                  pins SDK 10.0.1xx; opts dotnet test into Microsoft.
 Directory.Build.props        net10.0, nullable, implicit usings
 src/
   DfsrAnalyser.Core          parsing, categorisation, name resolution, case DB access (no UI)
-  DfsrAnalyser.Collection    AD discovery, SMB enumeration and copy, incremental tracking   (phase 5)
+  DfsrAnalyser.Collection    Windows-only: LDAP discovery, WNet credentials, remote event log (net10.0-windows)
   DfsrAnalyser.App           WPF app (`DfsrAnalyser.exe`): MVVM, ScottPlot chart, tree grid
   DfsrAnalyser.Cli           `dfsra` console harness: import / stats / files / bench
+tools/Publish-Lab.ps1        self-contained app + CLI zip for an isolated lab VM
+docs/Lab-Test-Checklist.md   manual remote-collection tests with expected results
 tests/
   DfsrAnalyser.Tests         xUnit v3: parser, extractor, importer tests on lab log fragments
 src/DfsrAnalyser.Core/Taxonomy/default-rules.json   embedded default taxonomy (copied to each case as rules.json)
@@ -261,15 +263,19 @@ The dump parser walks `CPAR` lines per (file, thread) in line order; later dumps
 
 ---
 
-## 6. Remote collection
+## 6. Remote collection — built in phase 5 (lab testing is manual)
 
-1. **Discover:** LDAP (`System.DirectoryServices.Protocols`) under `CN=DFSR-GlobalSettings,CN=System,<domain DN>` lists replication groups. The analyst picks RGs and members, resolved through `msDFSR-ComputerReference` → `dNSHostName`. SYSVOL ("Domain System Volume") is included: its members are the DCs, whose subscription objects sit under each DC's computer object. Manual server entry is also allowed.
-2. **Locate:** default `\\<server>\admin$\debug\`, with a per-server path override for custom `debuglogfilepath` settings.
-3. **Select by time range:** list `Dfsr*.log*` and read each file's header and first event line (cheap for `.gz`: decompress only the start). A file's span runs from its first event to the next Index's first event. Copy only files that overlap the range. Last-write times are only a fallback.
-4. **Copy and import:** parallel across servers (bounded), straight into the parser. Copies go to a temp folder and are deleted afterwards. Progress is shown per server, and failures are reported per server without aborting the run.
-5. **Credentials:** current user; optional alternate credentials applied per run via `WNetAddConnection2` and disconnected afterwards.
-6. **Top-up:** re-run the same collection profile (saved in `case.json`) to fetch only new or grown files.
-7. **Event log (optional switch, off by default):** read the remote "DFS Replication" event log for the same time range using `EventLogReader` with an `EventLogSession` to the server (RPC, same credentials). Upload also accepts exported `.evtx` files. Rows go into an `event_log` table (time UTC, event ID, level, message, parameters) and appear on the timeline as source `EventLog`, with categories keyed on event ID. They can be filtered alongside or apart from debug-log events. Debug-log `EventLog::Report eventId:N` lines link to the matching event-log entry where both exist.
+The lab VMs are not reachable from the development machine, so the design keeps the network layer thin:
+
+- **Core (`Core/Collection`, unit-tested with local folders as shares)**: `CollectionPlanner` (list `Dfsr*.log*`; skip files last written before the range without opening them; probe the rest — header and first line only — and select files overlapping the range, a file spanning to the next file's first event; skip files the case already holds complete, by server + Index + first-line hash), `Collector` (servers in parallel: connect, list, plan, copy with read/write sharing so the active log can be copied, read the event log; then import one server at a time; a failing server never stops the others; temp copies deleted), `CollectionLog`, `CaseSettings`/`CollectionProfile` (`case.json`; never credentials).
+- **`DfsrAnalyser.Collection` (Windows-only, lab-tested)**: `LdapDirectoryService` (`CN=DFSR-GlobalSettings,CN=System,<NC>` → `msDFSR-ReplicationGroup` → `CN=Topology` → `msDFSR-Member` → `msDFSR-ComputerReference` → dNSHostName and the DC flag; Negotiate with signing/sealing; paged), `WNetShareConnector` (alternate credentials via `\\host\IPC$`; error 1219 reported as a warning), `WindowsEventLogSource` (`EventLogSession` + time-filtered XPath on *DFS Replication*; `.evtx` files).
+- **Event-log records** become events (module `EVTLOG`) under a synthetic log file per server (Index −1), categorised into the *Event log* group by level, with a *Source* dimension (Debug log / Event log). Re-collecting replaces records by record id.
+- **Source path**: the case records the remote path a file came from, not its temp copy.
+- **Diagnostics**: every run writes `<case>\logs\collect-*.log` (machine, user, targets, each file's decision with index, span and reason, bytes copied, import outcome, errors with type, message and Win32/HRESULT codes; never passwords), shared for reading during the run.
+- **CLI**: `discover`, `test` (share and event log, no copying), `collect` (`--servers host|folder,…` or `--discover [--rg]`, `--last`/`--from`/`--to` in local time, `--dry-run`, `--event-log`, `--save-profile`), `topup --profile` (from 10 min before the last collection to now), `import-evtx`. `--user` prompts for a hidden password.
+- **App**: Collect menu → Collect from servers… (domain, alternate credentials with an unbound PasswordBox, Discover with RG ticks adding members, editable server grid with per-server log folder, range presets incl. *Since last collection*, event-log option, Test connection / Dry run / Collect, save as profile, live diagnostic log), Top up ▸ <profile>, Import event log (.evtx)….
+- **Verified locally**: dry run selects exactly the files overlapping a range on the samples; a full collect equals a direct import (371,469 + 70,701 events); a re-collect skips complete files and resumes only the active logs; the published self-contained executables run (CLI collect, app with all screenshot views including the Collect dialog after a real dry run). 72 tests.
+- **To verify in the lab** (`docs/Lab-Test-Checklist.md`): LDAP discovery incl. SYSVOL/DCs, admin-share access as current and alternate user, unreachable servers, top-up against a live active log, remote event log, `.evtx` import, cancellation.
 
 ---
 
@@ -325,7 +331,7 @@ The dump parser walks `CPAR` lines per (file, thread) in line order; later dumps
 | 2 ✅ | Taxonomy | Default rules file, apply/re-apply, `Other (<Module>)` fallback, rule notes, correlation pass (move-out as delete/conflict/update), "drop Plumbing detail" import option |
 | 3 ✅ | Main UI | Case open/create, upload, facet pane, chart, aggregate grid, lazy drill-down, event detail |
 | 4 ✅ | Name resolution | Config-dump parsing, DB GUID inference, origin/partner/RG/RF dimensions |
-| 5 | Remote collection | AD discovery (incl. SYSVOL/DCs), SMB copy, time-range selection, alternate credentials, collection profiles and top-up, optional event-log collection and `.evtx` upload |
+| 5 ✅ (code) / lab pending | Remote collection | AD discovery (incl. SYSVOL/DCs), SMB copy, time-range selection, alternate credentials, collection profiles and top-up, optional event-log collection and `.evtx` upload |
 | 6 | Analysis extras | Top-N, file trace, CSV export |
 | 7 | Packaging | Self-contained per-user installer, app icon, README |
 

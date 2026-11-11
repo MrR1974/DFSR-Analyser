@@ -35,6 +35,20 @@
                     <Separator />
                     <MenuItem Header="E_xit" Click="OnExit" />
                 </MenuItem>
+                <MenuItem Header="_Collect" IsEnabled="{Binding IsCaseOpen}">
+                    <MenuItem Header="_Collect from servers…" Command="{Binding OpenCollectCommand}" />
+                    <MenuItem Header="_Top up" ItemsSource="{Binding ProfileNames}">
+                        <MenuItem.ItemContainerStyle>
+                            <Style TargetType="MenuItem">
+                                <Setter Property="Header" Value="{Binding}" />
+                                <Setter Property="Command" Value="{Binding DataContext.TopUpCommand, RelativeSource={RelativeSource AncestorType=Window}}" />
+                                <Setter Property="CommandParameter" Value="{Binding}" />
+                            </Style>
+                        </MenuItem.ItemContainerStyle>
+                    </MenuItem>
+                    <Separator />
+                    <MenuItem Header="Import _event log (.evtx)…" Command="{Binding ImportEventLogFileCommand}" />
+                </MenuItem>
                 <MenuItem Header="_Rules" IsEnabled="{Binding IsCaseOpen}">
                     <MenuItem Header="_Edit rules file…" Command="{Binding EditRulesCommand}" />
                     <MenuItem Header="_Re-apply rules" Command="{Binding ReapplyRulesCommand}" />

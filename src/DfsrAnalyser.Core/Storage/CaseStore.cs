@@ -331,6 +331,61 @@ public sealed class CaseStore : IDisposable
         Execute("DELETE FROM event WHERE event_id = ?", eventId);
     }
 
+    // ---------- Windows event log ----------
+
+    /// <summary>Index used for the synthetic log_file row holding a server's DFS Replication event-log records.</summary>
+    public const int EventLogFileIndex = -1;
+    public const string EventLogModule = "EVTLOG";
+
+    /// <summary>
+    /// Stores DFS Replication event-log records as events (module <see cref="EventLogModule"/>) under a synthetic
+    /// log file per server, so they share the timeline, filters and grid with debug-log events. Records already
+    /// stored for the same server are replaced (event id = file id + record id). Returns the number stored.
+    /// </summary>
+    public int ImportEventLog(string serverName, IReadOnlyList<Collection.EventLogRecordData> records)
+    {
+        if (records.Count == 0) return 0;
+        var serverId = GetOrAddServer(serverName);
+        var file = FindLatestByIndex(serverId, EventLogFileIndex);
+        if (file is null)
+        {
+            file = new LogFileRecord { ServerId = serverId, Index = EventLogFileIndex, FirstLineHash = 0, FileName = "DFS Replication event log", IsComplete = true };
+            AddFile(file);
+        }
+
+        var ids = records.Select(r => EventId(file.FileId, (int)(uint)r.RecordId)).ToList();
+        Execute($"DELETE FROM event WHERE file_id = ? AND event_id IN ({string.Join(",", ids)})", file.FileId);
+
+        using (var writer = OpenSmallWriter())
+        {
+            foreach (var r in records)
+            {
+                var lines = r.Message.Replace("\r\n", "\n").Split('\n');
+                var raw = new RawEvent
+                {
+                    LineNo = (int)(uint)r.RecordId,
+                    LocalTime = r.TimeUtc,
+                    Module = EventLogModule,
+                    ClassMethod = "EventLog::" + (r.Provider ?? "DFSR"),
+                    Severity = r.Level switch { 1 or 2 => Severity.Error, 3 => Severity.Warn, _ => Severity.Info },
+                    Message = $"Event {r.EventId}: {lines[0].Trim()}",
+                };
+                raw.Nested.AddRange(lines.Skip(1).Select(l => l.TrimEnd()).Where(l => l.Length > 0));
+                var fields = new EventFields { EventLogId = r.EventId };
+                writer.Write(EventId(file.FileId, raw.LineNo), file.FileId, serverId, raw, r.TimeUtc, fields);
+            }
+        }
+        ApplyRules(file.FileId);
+
+        file.EventCount = CountEvents(file.FileId);
+        file.FirstTsUtc = Scalar<DateTime?>("SELECT min(ts_utc) FROM event WHERE file_id = ?", file.FileId);
+        file.LastTsUtc = Scalar<DateTime?>("SELECT max(ts_utc) FROM event WHERE file_id = ?", file.FileId);
+        file.ImportedAt = DateTime.UtcNow;
+        file.TzBasis = "UTC (event log)";
+        UpdateFile(file);
+        return records.Count;
+    }
+
     // ---------- orphans ----------
 
     public void AddPendingOrphan(int serverId, int index, IEnumerable<string> lines) =>

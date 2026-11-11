@@ -214,17 +214,29 @@ public partial class MainWindow : Window
         await _vm.RefreshAsync();
         foreach (var r in _vm.Rows.Where(r => r.CanExpand).ToList()) await _vm.ExpandAsync(r);
         await SavePngAsync(Path.Combine(Path.GetDirectoryName(png)!, Path.GetFileNameWithoutExtension(png) + "-controls.png"));
+
+        // Fourth image: the Collect dialog for the first saved profile, after a real dry run.
+        if (_vm.Session is { } session && _vm.ProfileNames.FirstOrDefault() is { } profile)
+        {
+            var cvm = new CollectViewModel(session, () => { }, profile);
+            var dlg = new CollectWindow(cvm) { Owner = this };
+            dlg.Show();
+            await cvm.DryRunCommand.ExecuteAsync(null);
+            await SavePngAsync(Path.Combine(Path.GetDirectoryName(png)!, Path.GetFileNameWithoutExtension(png) + "-collect.png"), dlg);
+            dlg.Close();
+        }
         Application.Current.Shutdown();
     }
 
-    private async Task SavePngAsync(string png)
+    private async Task SavePngAsync(string png, Window? window = null)
     {
+        window ??= this;
         await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
         await Task.Delay(500);
         await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
 
-        var dpi = VisualTreeHelper.GetDpi(this);
-        var content = (FrameworkElement)Content;
+        var dpi = VisualTreeHelper.GetDpi(window);
+        var content = (FrameworkElement)window.Content;
         var bmp = new RenderTargetBitmap((int)(content.ActualWidth * dpi.DpiScaleX), (int)(content.ActualHeight * dpi.DpiScaleY),
             dpi.PixelsPerInchX, dpi.PixelsPerInchY, PixelFormats.Pbgra32);
         bmp.Render(content);

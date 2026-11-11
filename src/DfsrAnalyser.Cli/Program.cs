@@ -30,7 +30,9 @@ internal static class Program
               Run an ad-hoc read query against the case and print the rows (tab-separated).
           dfsra bench <file-or-folder>...
               Time each import stage (decompress+read, parse, extract) without writing a case.
-        """;
+
+        Remote collection (dfsra discover / test / collect / topup / import-evtx):
+        """ + CollectCommands.Usage;
 
     private static int Main(string[] args)
     {
@@ -41,6 +43,8 @@ internal static class Program
         }
 
         var cmd = args[0];
+        if (CollectCommands.Handles(cmd)) return CollectCommands.Run(args);
+
         string? casePath = null, server = null;
         var perFolder = false;
         var dropPlumbing = false;

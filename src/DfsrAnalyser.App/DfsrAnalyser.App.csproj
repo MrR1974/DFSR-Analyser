@@ -23,6 +23,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\DfsrAnalyser.Core\DfsrAnalyser.Core.csproj" />
+    <ProjectReference Include="..\DfsrAnalyser.Collection\DfsrAnalyser.Collection.csproj" />
   </ItemGroup>
 
 </Project>

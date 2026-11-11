@@ -35,6 +35,9 @@ public sealed class Importer(CaseStore store)
     /// </summary>
     public bool DropPlumbingDetail { get; init; }
 
+    /// <summary>Maps the local path being imported to the path recorded in the case (e.g. the remote UNC path a copy came from).</summary>
+    public Func<string, string>? SourcePathResolver { get; init; }
+
     /// <summary>Finds Dfsr*.log and Dfsr*.log.gz under the given files or folders (recursively).</summary>
     public static List<string> FindLogFiles(IEnumerable<string> paths)
     {
@@ -258,7 +261,7 @@ public sealed class Importer(CaseStore store)
         if (lastId is { } myLast && store.TakePendingOrphan(plan.ServerId, h.Index + 1) is { } waiting)
             AppendNested(myLast, waiting);
 
-        rec.SourcePath = probe.Path;
+        rec.SourcePath = SourcePathResolver?.Invoke(probe.Path) ?? probe.Path;
         rec.FileName = Path.GetFileName(probe.Path);
         rec.SizeBytes = new FileInfo(probe.Path).Length;
         rec.HeaderComputer = h.Computer;
@@ -317,7 +320,8 @@ public sealed class Importer(CaseStore store)
         }
     }
 
-    internal static long Fnv1a64(string s)
+    /// <summary>Fingerprint hash of a file's first dated line (FNV-1a, 64-bit).</summary>
+    public static long Fnv1a64(string s)
     {
         unchecked
         {

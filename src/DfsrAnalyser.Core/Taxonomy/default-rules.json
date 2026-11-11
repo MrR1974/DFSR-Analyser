@@ -129,6 +129,11 @@
     // ---- Throttling ----
     { "name": "Bandwidth throttling wait", "group": "Throttling", "note": "Deliberate pause to honour the connection schedule's bandwidth level (severity 5). Not a fault." },
 
+    // ---- Windows event log (collected optionally; module EVTLOG) ----
+    { "name": "Event log: error", "group": "Event log", "note": "An error or critical entry from the DFS Replication event log. The Event ID dimension identifies it; the debug log usually holds the detail around the same time." },
+    { "name": "Event log: warning", "group": "Event log", "note": "A warning from the DFS Replication event log." },
+    { "name": "Event log: information", "group": "Event log", "note": "An informational entry from the DFS Replication event log (e.g. 4412 conflict, 4202/4204 staging, 2212/2213 dirty shutdown recovery, 5004/5014 connection state)." },
+
     // ---- Plumbing (hidden; nested detail can be dropped at import) ----
     { "name": "Async I/O statistics", "group": "Plumbing", "hidden": true },
     { "name": "Task scheduling", "group": "Plumbing", "hidden": true },
@@ -141,6 +146,11 @@
   ],
 
   "rules": [
+    // ===== Windows event-log records first: they are not debug-log lines =====
+    { "category": "Event log: error", "module": "EVTLOG", "severity": "error" },
+    { "category": "Event log: warning", "module": "EVTLOG", "severity": "warn" },
+    { "category": "Event log: information", "module": "EVTLOG" },
+
     // ===== Problems first: error codes win over the line's routine meaning =====
     { "category": "Redundant download (benign)", "errorCode": 9047 },
     { "category": "Superseded staging (benign)", "errorCode": 9024 },
