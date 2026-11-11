@@ -174,9 +174,13 @@ public sealed partial class CollectViewModel : ObservableObject
         var cred = Credential();
         var eventLog = IncludeEventLog;
         List<ConnectionTest>? tests = null;
+        var domain = string.IsNullOrWhiteSpace(Domain) ? null : Domain.Trim();
         await RunAsync("Testing connections…", log =>
+        {
+            using var access = new ImpersonatingRemoteAccess(log);
             tests = _session.RunAsync((store, _) =>
-                new Collector(store, new WNetShareConnector(log), new WindowsEventLogSource(), log).Test(targets, cred, eventLog, _cts!.Token)).GetAwaiter().GetResult());
+                new Collector(store, access, new WindowsEventLogSource(), log).Test(targets, cred, eventLog, _cts!.Token, domain)).GetAwaiter().GetResult();
+        });
         if (tests is null) return;
         foreach (var t in tests)
             if (Row(t.Server) is { } row)
@@ -203,15 +207,18 @@ public sealed partial class CollectViewModel : ObservableObject
             return;
         }
         var startedUtc = DateTime.UtcNow;
-        var req = new CollectionRequest(targets, from, to, IncludeEventLog, dryRun, Credential());
+        var req = new CollectionRequest(targets, from, to, IncludeEventLog, dryRun, Credential(), string.IsNullOrWhiteSpace(Domain) ? null : Domain.Trim());
         CollectionReport? report = null;
         await RunAsync(dryRun ? "Dry run…" : "Collecting…", log =>
         {
             var progress = new Progress<string>(p => ProgressText = p);
+            using var access = new ImpersonatingRemoteAccess(log);
             report = _session.RunAsync((store, _) =>
-                new Collector(store, new WNetShareConnector(log), new WindowsEventLogSource(), log).Collect(req, progress, _cts!.Token)).GetAwaiter().GetResult();
+                new Collector(store, access, new WindowsEventLogSource(), log).Collect(req, progress, _cts!.Token)).GetAwaiter().GetResult();
         });
         if (report is null) return;
+        if (report.FatalError is { } fatal)
+            MessageBox.Show(fatal, dryRun ? "Dry run" : "Collect", MessageBoxButton.OK, MessageBoxImage.Error);
 
         foreach (var s in report.Servers)
             if (Row(s.Server) is { } row)

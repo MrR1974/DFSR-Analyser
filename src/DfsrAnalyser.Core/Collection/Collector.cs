@@ -12,7 +12,9 @@ public sealed record CollectionRequest(
     DateTime? ToUtc,
     bool IncludeEventLog = false,
     bool DryRun = false,
-    NetworkCredential? Credential = null);
+    NetworkCredential? Credential = null,
+    /// <summary>DNS domain used to check the credentials; null = from the credential or the current domain.</summary>
+    string? Domain = null);
 
 public enum ServerStatus { Ok, Partial, Failed, Skipped }
 
@@ -39,7 +41,8 @@ public sealed class ServerReport(ServerTarget server)
           (EventLogRecords > 0 ? $", {EventLogRecords:N0} event-log records" : "") + (Error is null ? "" : $"; {Error}");
 }
 
-public sealed record CollectionReport(IReadOnlyList<ServerReport> Servers, string? LogPath, TimeSpan Elapsed, bool DryRun);
+/// <param name="FatalError">Set when the run stopped before contacting any server (e.g. rejected credentials).</param>
+public sealed record CollectionReport(IReadOnlyList<ServerReport> Servers, string? LogPath, TimeSpan Elapsed, bool DryRun, string? FatalError = null);
 
 public sealed record ConnectionTest(ServerTarget Server, bool ShareOk, string ShareDetail, bool? EventLogOk, string? EventLogDetail)
 {
@@ -48,51 +51,60 @@ public sealed record ConnectionTest(ServerTarget Server, bool ShareOk, string Sh
 
 /// <summary>
 /// Collects DFSR debug logs (and optionally the DFS Replication event log) from servers into a case.
-/// Servers are processed in parallel for listing, probing, copying and event-log reading; the case
-/// is written afterwards on one thread. A failing server is reported and does not stop the others.
+/// With alternate credentials, they are checked first and a rejection stops the run before any server is
+/// touched; each server's remote work then runs under them (<see cref="IRemoteAccess"/>). Servers are processed
+/// in parallel for listing, probing, copying and event-log reading; the case is written afterwards on one
+/// thread. A failing server is reported and does not stop the others.
 /// </summary>
-public sealed class Collector(CaseStore store, IShareConnector connector, IEventLogSource? eventLog, CollectionLog log)
+public sealed class Collector(CaseStore store, IRemoteAccess access, IEventLogSource? eventLog, CollectionLog log)
 {
     public int MaxParallelServers { get; init; } = 4;
 
     // ------------------------------------------------------------------ test connection
 
-    public List<ConnectionTest> Test(IReadOnlyList<ServerTarget> servers, NetworkCredential? credential, bool includeEventLog, CancellationToken ct = default)
+    /// <exception cref="CredentialRejectedException">The alternate credentials were rejected.</exception>
+    public List<ConnectionTest> Test(IReadOnlyList<ServerTarget> servers, NetworkCredential? credential, bool includeEventLog,
+        CancellationToken ct = default, string? domain = null)
     {
-        log.Info($"Testing {servers.Count} server(s){(credential is null ? " as the current user" : $" as {Who(credential)}")}.");
+        log.Info($"Testing {servers.Count} server(s) as {Who(credential)}.");
+        if (credential is not null) access.Validate(credential, domain);
+
         var results = new ConcurrentBag<ConnectionTest>();
         Parallel.ForEach(servers, new ParallelOptions { MaxDegreeOfParallelism = MaxParallelServers, CancellationToken = ct }, s =>
         {
-            bool shareOk;
-            string shareDetail;
+            var shareOk = false;
+            var shareDetail = "";
             bool? elOk = null;
             string? elDetail = null;
+            NoteLocal(s, credential);
             try
             {
-                using var _ = connector.Connect(s.Host, credential);
-                var files = CollectionPlanner.ListLogs(s.EffectiveLogFolder);
-                shareOk = true;
-                var newest = files.MaxBy(f => f.LastWriteUtc);
-                shareDetail = $"{s.EffectiveLogFolder}: {files.Count} log file(s)" +
-                              (newest is null ? "" : $", newest {newest.Name} written {newest.LastWriteUtc:yyyy-MM-dd HH:mm:ss} UTC");
-                log.Info($"Share OK. {shareDetail}", s.Name);
-
-                if (includeEventLog && eventLog is not null)
+                access.Run(credential, () =>
                 {
-                    try
+                    var files = CollectionPlanner.ListLogs(s.EffectiveLogFolder);
+                    shareOk = true;
+                    var newest = files.MaxBy(f => f.LastWriteUtc);
+                    shareDetail = $"{s.EffectiveLogFolder}: {files.Count} log file(s)" +
+                                  (newest is null ? "" : $", newest {newest.Name} written {newest.LastWriteUtc:yyyy-MM-dd HH:mm:ss} UTC");
+                    log.Info($"Share OK. {shareDetail}", s.Name);
+
+                    if (includeEventLog && eventLog is not null)
                     {
-                        var n = eventLog.ReadRemote(s.Host, DateTime.UtcNow.AddDays(-1), DateTime.UtcNow, credential, ct).Take(1000).Count();
-                        elOk = true;
-                        elDetail = $"DFS Replication log readable, {n}{(n == 1000 ? "+" : "")} record(s) in the last 24 h";
-                        log.Info($"Event log OK. {elDetail}", s.Name);
+                        try
+                        {
+                            var n = eventLog.ReadRemote(s.Host, DateTime.UtcNow.AddDays(-1), DateTime.UtcNow, ct).Take(1000).Count();
+                            elOk = true;
+                            elDetail = $"DFS Replication log readable, {n}{(n == 1000 ? "+" : "")} record(s) in the last 24 h";
+                            log.Info($"Event log OK. {elDetail}", s.Name);
+                        }
+                        catch (Exception ex) when (ex is not OperationCanceledException)
+                        {
+                            elOk = false;
+                            elDetail = CollectionLog.Describe(ex) + EventLogHint(ex);
+                            log.Error("Event log test failed" + EventLogHint(ex), s.Name, ex);
+                        }
                     }
-                    catch (Exception ex) when (ex is not OperationCanceledException)
-                    {
-                        elOk = false;
-                        elDetail = CollectionLog.Describe(ex);
-                        log.Error("Event log test failed", s.Name, ex);
-                    }
-                }
+                });
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -112,87 +124,51 @@ public sealed class Collector(CaseStore store, IShareConnector connector, IEvent
         var sw = Stopwatch.StartNew();
         log.Info($"{(req.DryRun ? "Dry run" : "Collection")} from {req.Servers.Count} server(s); range " +
                  $"{req.FromUtc?.ToString("yyyy-MM-dd HH:mm:ss") ?? "start"} .. {req.ToUtc?.ToString("yyyy-MM-dd HH:mm:ss") ?? "now"} UTC; " +
-                 $"event log {(req.IncludeEventLog ? "yes" : "no")}; {(req.Credential is null ? "current user" : Who(req.Credential))}.");
+                 $"event log {(req.IncludeEventLog ? "yes" : "no")}; as {Who(req.Credential)}.");
+        var reports = req.Servers.Select(s => new ServerReport(s)).ToList();
+
+        if (req.Credential is not null)
+        {
+            try
+            {
+                progress?.Report("Checking credentials…");
+                access.Validate(req.Credential, req.Domain);
+            }
+            catch (CredentialRejectedException ex)
+            {
+                foreach (var r in reports) { r.Status = ServerStatus.Failed; r.Error = ex.Message; }
+                log.Info("Stopped: no server was contacted.");
+                return new CollectionReport(reports, log.Path, sw.Elapsed, req.DryRun, ex.Message);
+            }
+        }
 
         // Snapshot of complete files per server, so parallel planning never touches the database.
         var complete = CompleteFiles();
         var tempRoot = Path.Combine(store.TempFolder, "collect-" + DateTime.UtcNow.ToString("yyyyMMddHHmmss"));
-        var reports = req.Servers.Select(s => new ServerReport(s)).ToList();
         var copied = new ConcurrentDictionary<ServerReport, List<(string Local, string Remote)>>();
         var eventRecords = new ConcurrentDictionary<ServerReport, List<EventLogRecordData>>();
 
         try
         {
-            // ---- per server, in parallel: connect, list, plan, copy, read event log ----
+            // ---- per server, in parallel: list, plan, copy, read event log (as the requested identity) ----
             Parallel.ForEach(reports, new ParallelOptions { MaxDegreeOfParallelism = MaxParallelServers, CancellationToken = ct }, rep =>
             {
-                var s = rep.Server;
                 var serverSw = Stopwatch.StartNew();
+                NoteLocal(rep.Server, req.Credential);
                 try
                 {
-                    progress?.Report($"{s.Name}: connecting…");
-                    using var _ = connector.Connect(s.Host, req.Credential);
-
-                    progress?.Report($"{s.Name}: listing {s.EffectiveLogFolder}…");
-                    var files = CollectionPlanner.ListLogs(s.EffectiveLogFolder);
-                    log.Info($"Listed {files.Count} file(s) in {s.EffectiveLogFolder}.", s.Name);
-
-                    var serverComplete = complete.GetValueOrDefault(s.Name.ToUpperInvariant()) ?? [];
-                    rep.Plan = CollectionPlanner.Plan(files, req.FromUtc, req.ToUtc, (idx, hash) => serverComplete.Contains((idx, hash)));
-                    foreach (var p in rep.Plan)
-                        log.Info($"{p.File.Name,-18} {p.File.Size,12:N0} B  idx {p.Index?.ToString() ?? "?",4}  " +
-                                 $"{p.FirstEventUtc?.ToString("yyyy-MM-dd HH:mm:ss") ?? "-",19} .. {p.EndUtc?.ToString("yyyy-MM-dd HH:mm:ss") ?? "-",19}  " +
-                                 $"{p.Decision}{(p.Note is null ? "" : " (" + p.Note + ")")}", s.Name);
-                    if (rep.Plan.Any(p => p.Decision == FileDecision.Unreadable)) rep.Status = ServerStatus.Partial;
-
-                    if (!req.DryRun)
-                    {
-                        var dest = Path.Combine(tempRoot, Sanitise(s.Name));
-                        Directory.CreateDirectory(dest);
-                        var list = new List<(string, string)>();
-                        foreach (var p in rep.Plan.Where(p => p.Decision == FileDecision.Copy))
-                        {
-                            ct.ThrowIfCancellationRequested();
-                            progress?.Report($"{s.Name}: copying {p.File.Name} ({p.File.Size / 1048576.0:N1} MB)…");
-                            var local = Path.Combine(dest, p.File.Name);
-                            CopyFile(p.File.Path, local, ct);
-                            rep.FilesCopied++;
-                            rep.BytesCopied += new FileInfo(local).Length;
-                            list.Add((local, p.File.Path));
-                        }
-                        copied[rep] = list;
-                        log.Info($"Copied {rep.FilesCopied} file(s), {rep.BytesCopied:N0} bytes.", s.Name);
-                    }
-
-                    if (req.IncludeEventLog && eventLog is not null && !req.DryRun)
-                    {
-                        progress?.Report($"{s.Name}: reading the DFS Replication event log…");
-                        try
-                        {
-                            var from = req.FromUtc ?? DateTime.UtcNow.AddDays(-30);
-                            var to = req.ToUtc ?? DateTime.UtcNow.AddMinutes(1);
-                            var records = eventLog.ReadRemote(s.Host, from, to, req.Credential, ct).ToList();
-                            eventRecords[rep] = records;
-                            log.Info($"Read {records.Count} event-log record(s).", s.Name);
-                        }
-                        catch (Exception ex) when (ex is not OperationCanceledException)
-                        {
-                            rep.Status = ServerStatus.Partial;
-                            rep.Error = "event log: " + ex.Message;
-                            log.Error("Reading the event log failed", s.Name, ex);
-                        }
-                    }
+                    access.Run(req.Credential, () => CollectServer(rep, req, complete, tempRoot, copied, eventRecords, progress, ct));
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     rep.Status = ServerStatus.Failed;
                     rep.Error = ex.Message;
-                    log.Error("Collection failed", s.Name, ex);
+                    log.Error("Collection failed", rep.Server.Name, ex);
                 }
                 rep.Elapsed = serverSw.Elapsed;
             });
 
-            // ---- write the case, one server at a time ----
+            // ---- write the case, one server at a time (local work: current identity) ----
             foreach (var rep in reports.Where(r => copied.ContainsKey(r)))
             {
                 var files = copied[rep];
@@ -223,6 +199,80 @@ public sealed class Collector(CaseStore store, IShareConnector connector, IEvent
         return new CollectionReport(reports, log.Path, sw.Elapsed, req.DryRun);
     }
 
+    private void CollectServer(ServerReport rep, CollectionRequest req, Dictionary<string, HashSet<(int, long)>> complete, string tempRoot,
+        ConcurrentDictionary<ServerReport, List<(string, string)>> copied, ConcurrentDictionary<ServerReport, List<EventLogRecordData>> eventRecords,
+        IProgress<string>? progress, CancellationToken ct)
+    {
+        var s = rep.Server;
+        progress?.Report($"{s.Name}: listing {s.EffectiveLogFolder}…");
+        var files = CollectionPlanner.ListLogs(s.EffectiveLogFolder);
+        log.Info($"Listed {files.Count} file(s) in {s.EffectiveLogFolder}.", s.Name);
+
+        var serverComplete = complete.GetValueOrDefault(s.Name.ToUpperInvariant()) ?? [];
+        rep.Plan = CollectionPlanner.Plan(files, req.FromUtc, req.ToUtc, (idx, hash) => serverComplete.Contains((idx, hash)));
+        foreach (var p in rep.Plan)
+            log.Info($"{p.File.Name,-18} {p.File.Size,12:N0} B  idx {p.Index?.ToString() ?? "?",4}  " +
+                     $"{p.FirstEventUtc?.ToString("yyyy-MM-dd HH:mm:ss") ?? "-",19} .. {p.EndUtc?.ToString("yyyy-MM-dd HH:mm:ss") ?? "-",19}  " +
+                     $"{p.Decision}{(p.Note is null ? "" : " (" + p.Note + ")")}", s.Name);
+        if (rep.Plan.Any(p => p.Decision == FileDecision.Unreadable)) rep.Status = ServerStatus.Partial;
+
+        if (!req.DryRun)
+        {
+            var dest = Path.Combine(tempRoot, Sanitise(s.Name));
+            Directory.CreateDirectory(dest);
+            var list = new List<(string, string)>();
+            foreach (var p in rep.Plan.Where(p => p.Decision == FileDecision.Copy))
+            {
+                ct.ThrowIfCancellationRequested();
+                progress?.Report($"{s.Name}: copying {p.File.Name} ({p.File.Size / 1048576.0:N1} MB)…");
+                var local = Path.Combine(dest, p.File.Name);
+                CopyFile(p.File.Path, local, ct);
+                rep.FilesCopied++;
+                rep.BytesCopied += new FileInfo(local).Length;
+                list.Add((local, p.File.Path));
+            }
+            copied[rep] = list;
+            log.Info($"Copied {rep.FilesCopied} file(s), {rep.BytesCopied:N0} bytes.", s.Name);
+        }
+
+        if (req.IncludeEventLog && eventLog is not null && !req.DryRun)
+        {
+            progress?.Report($"{s.Name}: reading the DFS Replication event log…");
+            try
+            {
+                var from = req.FromUtc ?? DateTime.UtcNow.AddDays(-30);
+                var to = req.ToUtc ?? DateTime.UtcNow.AddMinutes(1);
+                var records = eventLog.ReadRemote(s.Host, from, to, ct).ToList();   // materialised inside the identity
+                eventRecords[rep] = records;
+                log.Info($"Read {records.Count} event-log record(s).", s.Name);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                rep.Status = ServerStatus.Partial;
+                rep.Error = "event log: " + ex.Message + EventLogHint(ex);
+                log.Error("Reading the event log failed" + EventLogHint(ex), s.Name, ex);
+            }
+        }
+    }
+
+    /// <summary>Practical advice for the common remote event-log failures.</summary>
+    internal static string EventLogHint(Exception ex) => (uint)ex.HResult switch
+    {
+        0x800706BA => " — remote event-log access is blocked: enable the 'Remote Event Log Management' firewall rules on the server, " +
+                      "or export the DFS Replication log there and use Import event log (.evtx).",
+        0x80070005 => " — access denied: the account needs to be an administrator or in 'Event Log Readers' on the server.",
+        _ => "",
+    };
+
+    /// <summary>Alternate credentials are for remote access; the local computer's event log is read as the current user.</summary>
+    private void NoteLocal(ServerTarget s, NetworkCredential? credential)
+    {
+        if (credential is null) return;
+        var shortName = s.Host.Split('.')[0];
+        if (shortName.Equals(Environment.MachineName, StringComparison.OrdinalIgnoreCase) || s.Host is "localhost" or "." or "127.0.0.1")
+            log.Warn("This is the local computer: its event log is read as the current user, not the alternate account.", s.Name);
+    }
+
     private Dictionary<string, HashSet<(int, long)>> CompleteFiles()
     {
         var map = new Dictionary<string, HashSet<(int, long)>>();
@@ -251,5 +301,6 @@ public sealed class Collector(CaseStore store, IShareConnector connector, IEvent
 
     private static string Sanitise(string name) => string.Concat(name.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
 
-    private static string Who(NetworkCredential c) => string.IsNullOrEmpty(c.Domain) ? c.UserName : $@"{c.Domain}\{c.UserName}";
+    private static string Who(NetworkCredential? c) =>
+        c is null ? "the current user" : string.IsNullOrEmpty(c.Domain) ? c.UserName : $@"{c.Domain}\{c.UserName}";
 }

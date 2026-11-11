@@ -24,7 +24,7 @@ Record for each step: pass / fail, and the log file name if it failed.
 |---|---|---|
 | A1 | `.\dfsra.exe discover` (as a domain user) | Domain and the DC used. Every RG listed, **Domain System Volume** marked `[SYSVOL]` with the DCs as members (marked `DC`); your test RG with DFSRDC01 and DFSRMEMBER01 and their DNS names |
 | A2 | `.\dfsra.exe discover --domain <dc fqdn>` | Same result, via that DC |
-| A3 | `.\dfsra.exe discover --user LAB\someadmin` | Prompts for a password (hidden). Same result |
+| A3 | `.\dfsra.exe discover --user DFSRTEST\someadmin` | Prompts for a password (hidden). Same result |
 | A4 | A3 with a wrong password | Fails with an LDAP invalid-credentials error; nothing else happens |
 
 ## B. Connection test (CLI)
@@ -35,7 +35,9 @@ Record for each step: pass / fail, and the log file name if it failed.
 | B2 | B1 plus `--event-log` | Adds `event log: DFS Replication log readable, N record(s) in the last 24 h` per server |
 | B3 | `.\dfsra.exe test --case C:\Cases\lab1 --servers dfsrdc01,nosuchserver` | DFSRDC01 `OK`; NOSUCHSERVER `FAIL` with a network-path error; exit code 1 |
 | B4 | Run B1 as a user **without** admin rights on the servers | `FAIL` with access denied for each server |
-| B5 | B4 again with `--user LAB\someadmin` | `OK` (alternate credentials applied per server) |
+| B5 | B4 again with `--user DFSRTEST\someadmin` | Log shows `Credentials for DFSRTEST\someadmin accepted by the domain` and `Remote access will use DFSRTEST\someadmin`; `OK` per server |
+| B6 | B5 with a **wrong password** (also try it while logged on as a domain admin) | `ERROR: The user name or password for DFSRTEST\someadmin is incorrect …`; no server is contacted; exit code 1 |
+| B7 | B5 with a user that exists but has **no rights** on the servers | Credentials accepted; each server `FAIL` with access denied |
 
 ## C. Collection (CLI)
 
@@ -61,16 +63,19 @@ Record for each step: pass / fail, and the log file name if it failed.
 | D4 | Time range *Last 6 hours*, *Dry run* | Detail column shows `N files listed, N selected, … outside range`; nothing imported |
 | D5 | Tick *Save as profile*, name `lab`, *Collect* | Status `Ok` per server; close the dialog; the main window refreshes with the collected events |
 | D6 | Collect ▸ Top up ▸ lab | Dialog opens with the profile and *Since last collection (top-up)*; *Collect* copies only new/active files |
-| D7 | *Use alternate credentials* with a valid admin and wrong password | Clear access-denied / logon-failure messages per server; correct password then succeeds |
+| D7 | *Use alternate credentials* with a valid user and a **wrong password**, then *Test connection* and *Collect* | An error box "The user name or password … is incorrect"; every server *Failed* with that message; nothing collected. The correct password then succeeds and the log says `Remote access will use …` |
 | D8 | Tick the event-log option and collect | Main window: *Source* facet shows *Event log*; the *Event log* group appears in Category |
 | D9 | Collect ▸ Import event log (.evtx)… with a DFS Replication log exported from Event Viewer | Asks for the server name; records appear as in D8 |
 | D10 | Start a collection with *Everything on the servers* and press *Cancel* mid-copy | Stops; `Cancelled.` in the log; the case keeps what was committed; a later collection resumes |
 
 ## Known behaviours to confirm (not failures)
 
-- Windows allows one set of credentials per server per logon session. If you already have a connection to a server
-  (e.g. an open Explorer window on `\\server\c$`) under another account, the log shows error **1219** as a warning
-  and the existing connection is used. Close it (`net use \\server\IPC$ /delete`) to test alternate credentials.
+- Alternate credentials are checked against the domain first (LDAP bind). Remote work then runs under a
+  *new-credentials* logon, so existing connections you have to the servers (Explorer windows, earlier runs) do not
+  interfere. On the local computer, the event log is read as the logged-on user (logged as a warning).
+- If **Remote Event Log Management** is not allowed through a server's firewall, reading its event log fails with
+  "The RPC server is unavailable" after about 20 seconds; the log now says so. Enable those firewall rules on the
+  server, or export the log there and use *Import event log (.evtx)*.
 - Top-up starts 10 minutes before the last collection to allow for clock differences between this machine and the
   servers; overlapping files are skipped or resumed, never duplicated.
 - The active log is copied while DFSR writes to it; the last entry may be incomplete and is re-read on the next top-up.

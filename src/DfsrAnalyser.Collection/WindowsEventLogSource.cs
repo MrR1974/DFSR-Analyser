@@ -1,7 +1,5 @@
 using System.Diagnostics.Eventing.Reader;
 using System.Globalization;
-using System.Net;
-using System.Security;
 using DfsrAnalyser.Core.Collection;
 
 namespace DfsrAnalyser.Collection;
@@ -15,11 +13,10 @@ public sealed class WindowsEventLogSource : IEventLogSource
 {
     public const string LogName = "DFS Replication";
 
-    public IEnumerable<EventLogRecordData> ReadRemote(string host, DateTime fromUtc, DateTime toUtc, NetworkCredential? credential, CancellationToken ct = default)
+    /// <summary>Uses the calling thread's identity; alternate credentials come from impersonation (IRemoteAccess.Run).</summary>
+    public IEnumerable<EventLogRecordData> ReadRemote(string host, DateTime fromUtc, DateTime toUtc, CancellationToken ct = default)
     {
-        using var session = credential is null || string.IsNullOrEmpty(credential.UserName)
-            ? new EventLogSession(host)
-            : new EventLogSession(host, credential.Domain, credential.UserName, ToSecure(credential.Password), SessionAuthentication.Default);
+        using var session = new EventLogSession(host);
         var query = new EventLogQuery(LogName, PathType.LogName, TimeFilter(fromUtc, toUtc)) { Session = session };
         foreach (var r in Read(query, ct)) yield return r;
     }
@@ -50,11 +47,4 @@ public sealed class WindowsEventLogSource : IEventLogSource
     private static string TimeFilter(DateTime fromUtc, DateTime toUtc) =>
         $"*[System[TimeCreated[@SystemTime>='{fromUtc:yyyy-MM-ddTHH:mm:ss.fffZ}' and @SystemTime<='{toUtc:yyyy-MM-ddTHH:mm:ss.fffZ}']]]";
 
-    private static SecureString ToSecure(string s)
-    {
-        var ss = new SecureString();
-        foreach (var c in s) ss.AppendChar(c);
-        ss.MakeReadOnly();
-        return ss;
-    }
 }

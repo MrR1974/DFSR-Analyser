@@ -81,7 +81,7 @@ internal static class CollectCommands
             };
         }
         catch (Exception ex) when (ex is ArgumentException or IOException or InvalidOperationException or UnauthorizedAccessException
-                                       or System.DirectoryServices.Protocols.LdapException or System.ComponentModel.Win32Exception)
+                                       or System.DirectoryServices.Protocols.LdapException or System.ComponentModel.Win32Exception or CredentialRejectedException)
         {
             Console.Error.WriteLine("ERROR: " + CollectionLog.Describe(ex));
             return 1;
@@ -113,7 +113,8 @@ internal static class CollectCommands
         using var log = NewLog(o.Case);
         var cred = Credential(o.User);
         var targets = Targets(o, cred, log);
-        var tests = new Collector(store, new WNetShareConnector(log), new WindowsEventLogSource(), log).Test(targets, cred, o.EventLog);
+        using var access = new ImpersonatingRemoteAccess(log);
+        var tests = new Collector(store, access, new WindowsEventLogSource(), log).Test(targets, cred, o.EventLog, default, o.Domain);
         foreach (var t in tests)
         {
             Console.WriteLine($"{(t.Ok ? "OK  " : "FAIL")} {t.Server.Name,-18} {t.ShareDetail}");
@@ -131,7 +132,7 @@ internal static class CollectCommands
         var cred = Credential(o.User);
         var targets = Targets(o, cred, log);
         var (from, to) = Range(o);
-        var report = Run(store, log, new CollectionRequest(targets, from, to, o.EventLog, o.DryRun, cred));
+        var report = Run(store, log, new CollectionRequest(targets, from, to, o.EventLog, o.DryRun, cred, o.Domain));
 
         if (o.SaveProfile is { } name && !o.DryRun)
         {
@@ -158,7 +159,7 @@ internal static class CollectCommands
         using var log = NewLog(o.Case);
         var from = profile.LastCollectedUtc - CollectionProfile.TopUpOverlap;
         var now = DateTime.UtcNow;
-        var report = Run(store, log, new CollectionRequest(profile.Servers, from, null, profile.IncludeEventLog, false, Credential(o.User)));
+        var report = Run(store, log, new CollectionRequest(profile.Servers, from, null, profile.IncludeEventLog, false, Credential(o.User), profile.Domain));
         if (report.Servers.Any(s => s.Status != ServerStatus.Failed))
         {
             profile.LastCollectedUtc = now;
@@ -190,8 +191,10 @@ internal static class CollectCommands
     private static CollectionReport Run(CaseStore store, CollectionLog log, CollectionRequest req)
     {
         log.Line += Console.WriteLine;
-        var report = new Collector(store, new WNetShareConnector(log), new WindowsEventLogSource(), log).Collect(req);
+        using var access = new ImpersonatingRemoteAccess(log);
+        var report = new Collector(store, access, new WindowsEventLogSource(), log).Collect(req);
         Console.WriteLine();
+        if (report.FatalError is { } fatal) Console.Error.WriteLine("ERROR: " + fatal);
         foreach (var s in report.Servers)
             Console.WriteLine($"{s.Status,-8} {s.Server.Name,-18} {s.Summary}");
         Console.WriteLine($"\n{(report.DryRun ? "Dry run" : "Collection")} finished in {report.Elapsed.TotalSeconds:N1} s. Log: {report.LogPath}");

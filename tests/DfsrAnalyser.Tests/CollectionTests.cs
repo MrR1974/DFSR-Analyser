@@ -62,7 +62,7 @@ public sealed class CollectionTests : IDisposable
     }
 
     private Collector NewCollector(CaseStore store, CollectionLog log, IEventLogSource? el = null) =>
-        new(store, new NoCredentialConnector(), el, log);
+        new(store, new CurrentUserAccess(), el, log);
 
     [Fact]
     public void Planner_selects_files_overlapping_the_range()
@@ -182,6 +182,79 @@ public sealed class CollectionTests : IDisposable
     }
 
     [Fact]
+    public void Rejected_credentials_stop_the_run_before_any_server_is_touched()
+    {
+        ThreeHours();
+        using var store = CaseStore.Open(CaseDir);
+        using var log = new CollectionLog(null);
+        var access = new RecordingAccess { Reject = true };
+        var cred = new NetworkCredential("someone", "wrong", "LAB");
+        var report = new Collector(store, access, null, log).Collect(
+            new CollectionRequest([new("DC01", "dc01", Share("DC01")), new("DC02", "dc02", Share("DC01"))], null, null, Credential: cred), ct: Ct);
+
+        Assert.All(report.Servers, s =>
+        {
+            Assert.Equal(ServerStatus.Failed, s.Status);
+            Assert.Contains("incorrect", s.Error);
+            Assert.Empty(s.Plan);
+        });
+        Assert.Equal(0, access.Runs);
+        Assert.Contains("incorrect", report.FatalError);
+        Assert.Equal(0, store.Scalar<long>("SELECT count(*) FROM event"));
+
+        Assert.Throws<CredentialRejectedException>(() =>
+            new Collector(store, access, null, log).Test([new("DC01", "dc01", Share("DC01"))], cred, false, Ct));
+    }
+
+    [Fact]
+    public void Remote_work_for_every_server_runs_under_the_requested_credentials()
+    {
+        ThreeHours();
+        WriteLog("MEMBER01", 1, 1, Utc(2), 30, gzip: false);
+        using var store = CaseStore.Open(CaseDir);
+        using var log = new CollectionLog(null);
+        var access = new RecordingAccess();
+        var cred = new NetworkCredential("someone", "right", "LAB");
+        var report = new Collector(store, access, null, log).Collect(
+            new CollectionRequest([new("DC01", "dc01", Share("DC01")), new("MEMBER01", "member01", Share("MEMBER01"))], null, null, Credential: cred), ct: Ct);
+
+        Assert.All(report.Servers, s => Assert.Equal(ServerStatus.Ok, s.Status));
+        Assert.Equal(1, access.Validations);
+        Assert.Equal(2, access.Runs);
+        Assert.All(access.Credentials, c => Assert.Same(cred, c));
+        Assert.Equal(210, store.Scalar<long>("SELECT count(*) FROM event"));
+    }
+
+    [Fact]
+    public void Blocked_remote_event_log_gets_a_firewall_hint()
+    {
+        var blocked = new InvalidOperationException("The RPC server is unavailable.") { HResult = unchecked((int)0x800706BA) };
+        Assert.Contains("Remote Event Log Management", Collector.EventLogHint(blocked));
+        Assert.Equal("", Collector.EventLogHint(new IOException("other")));
+    }
+
+    private sealed class RecordingAccess : IRemoteAccess
+    {
+        public bool Reject { get; init; }
+        public int Validations;
+        public int Runs;
+        public readonly System.Collections.Concurrent.ConcurrentBag<NetworkCredential?> Credentials = [];
+
+        public void Validate(NetworkCredential credential, string? domain)
+        {
+            Interlocked.Increment(ref Validations);
+            if (Reject) throw new CredentialRejectedException($"The user name or password for {credential.Domain}\\{credential.UserName} is incorrect.");
+        }
+
+        public void Run(NetworkCredential? credential, Action work)
+        {
+            Interlocked.Increment(ref Runs);
+            Credentials.Add(credential);
+            work();
+        }
+    }
+
+    [Fact]
     public void Profiles_round_trip_in_case_json_without_credentials()
     {
         var s = new CaseSettings();
@@ -201,7 +274,7 @@ public sealed class CollectionTests : IDisposable
 
     private sealed class FakeEventLog : IEventLogSource
     {
-        public IEnumerable<EventLogRecordData> ReadRemote(string host, DateTime fromUtc, DateTime toUtc, NetworkCredential? credential, CancellationToken ct = default) =>
+        public IEnumerable<EventLogRecordData> ReadRemote(string host, DateTime fromUtc, DateTime toUtc, CancellationToken ct = default) =>
         [
             new(101, Utc(2, 10), 4412, 4, "DFSR",
                 "The DFS Replication service detected that a file was changed on multiple servers.\r\n\r\nOriginal File Path: C:\\Data\\a.txt\r\nNew Name in Conflict Folder: a-{GUID}-v1.txt"),
@@ -211,3 +284,4 @@ public sealed class CollectionTests : IDisposable
         public IEnumerable<EventLogRecordData> ReadFile(string evtxPath, CancellationToken ct = default) => [];
     }
 }
+
