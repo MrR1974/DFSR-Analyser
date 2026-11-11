@@ -100,8 +100,9 @@ public sealed class Collector(CaseStore store, IRemoteAccess access, IEventLogSo
                         catch (Exception ex) when (ex is not OperationCanceledException)
                         {
                             elOk = false;
-                            elDetail = CollectionLog.Describe(ex) + EventLogHint(ex);
-                            log.Error("Event log test failed" + EventLogHint(ex), s.Name, ex);
+                            elDetail = CollectionLog.Describe(ex) + Hinted(ex);
+                            log.Error("Event log test failed", s.Name, ex);
+                            if (EventLogHint(ex) is { Length: > 0 } hint) log.Warn(hint, s.Name);
                         }
                     }
                 });
@@ -249,8 +250,9 @@ public sealed class Collector(CaseStore store, IRemoteAccess access, IEventLogSo
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 rep.Status = ServerStatus.Partial;
-                rep.Error = "event log: " + ex.Message + EventLogHint(ex);
-                log.Error("Reading the event log failed" + EventLogHint(ex), s.Name, ex);
+                rep.Error = "event log: " + ex.Message + Hinted(ex);
+                log.Error("Reading the event log failed", s.Name, ex);
+                if (EventLogHint(ex) is { Length: > 0 } hint) log.Warn(hint, s.Name);
             }
         }
     }
@@ -258,11 +260,13 @@ public sealed class Collector(CaseStore store, IRemoteAccess access, IEventLogSo
     /// <summary>Practical advice for the common remote event-log failures.</summary>
     internal static string EventLogHint(Exception ex) => (uint)ex.HResult switch
     {
-        0x800706BA => " — remote event-log access is blocked: enable the 'Remote Event Log Management' firewall rules on the server, " +
+        0x800706BA => "Remote event-log access is blocked: enable the 'Remote Event Log Management' firewall rules on the server, " +
                       "or export the DFS Replication log there and use Import event log (.evtx).",
-        0x80070005 => " — access denied: the account needs to be an administrator or in 'Event Log Readers' on the server.",
+        0x80070005 => "Event-log access denied: the account needs to be an administrator or in 'Event Log Readers' on the server.",
         _ => "",
     };
+
+    private static string Hinted(Exception ex) => EventLogHint(ex) is { Length: > 0 } h ? " " + h : "";
 
     /// <summary>Alternate credentials are for remote access; the local computer's event log is read as the current user.</summary>
     private void NoteLocal(ServerTarget s, NetworkCredential? credential)

@@ -17,6 +17,20 @@ public sealed class LdapDirectoryService(CollectionLog? log = null) : IDirectory
 
     public DiscoveryResult Discover(string? domain, NetworkCredential? credential, CancellationToken ct = default)
     {
+        try
+        {
+            return DiscoverCore(domain, credential, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Recorded here because discovery failures (e.g. a wrong password) otherwise only reach the console.
+            log?.Error("LDAP discovery failed" + (ex is LdapException { ErrorCode: 49 } ? " — the user name or password is incorrect" : ""), ex: ex);
+            throw;
+        }
+    }
+
+    private DiscoveryResult DiscoverCore(string? domain, NetworkCredential? credential, CancellationToken ct)
+    {
         var target = string.IsNullOrWhiteSpace(domain) ? null : domain.Trim();
         log?.Info($"LDAP: connecting to {target ?? "the current domain"} as {(credential is null ? "the current user" : credential.UserName)}.");
         using var conn = credential is null
