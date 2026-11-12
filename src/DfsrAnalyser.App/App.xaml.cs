@@ -19,6 +19,8 @@ public partial class App : Application
 
     /// <summary>File name pattern applied for the screenshot mode's filters image (--screenshot-file).</summary>
     public static string ScreenshotFilePattern { get; private set; } = "file_00*.txt";
+    /// <summary>File name (or UID) the screenshot mode traces in the File trace tab.</summary>
+    public static string ScreenshotTrace { get; private set; } = "file_0005.txt";
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -31,6 +33,7 @@ public partial class App : Application
                 case "--import" when i + 1 < e.Args.Length: StartupImport = e.Args[++i]; break;
                 case "--import-naming" when i + 1 < e.Args.Length: ImportNaming = e.Args[++i]; break;
                 case "--screenshot-file" when i + 1 < e.Args.Length: ScreenshotFilePattern = e.Args[++i]; break;
+                case "--screenshot-trace" when i + 1 < e.Args.Length: ScreenshotTrace = e.Args[++i]; break;
                 default:
                     if (!e.Args[i].StartsWith("--", StringComparison.Ordinal) && Directory.Exists(e.Args[i])) StartupCase = e.Args[i];
                     break;

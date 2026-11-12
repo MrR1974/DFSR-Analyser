@@ -93,7 +93,8 @@ public static class FieldExtractor
     }
 
     /// <summary>
-    /// Finds "key:" tokens: an ASCII letter at the start or after whitespace, then letters/digits, then ':'.
+    /// Finds "key:" tokens: an ASCII letter at the start or after whitespace, then letters/digits, an optional
+    /// "(qualifier)", then ':'.
     /// Returns the number found (capped at the span length).
     /// </summary>
     private static int FindKeys(ReadOnlySpan<char> msg, Span<int> starts, Span<int> colons)
@@ -106,6 +107,13 @@ public static class FieldExtractor
             {
                 var j = i + 1;
                 while (j < msg.Length && char.IsAsciiLetterOrDigit(msg[j])) j++;
+                // A qualifier in brackets is part of the key: "fileSize(approx):1204224".
+                if (j < msg.Length && msg[j] == '(')
+                {
+                    var k = j + 1;
+                    while (k < msg.Length && k - j <= 16 && char.IsAsciiLetterOrDigit(msg[k])) k++;
+                    if (k + 1 < msg.Length && msg[k] == ')' && msg[k + 1] == ':') j = k + 1;
+                }
                 if (j < msg.Length && msg[j] == ':')
                 {
                     starts[n] = i;

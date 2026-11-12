@@ -274,6 +274,50 @@ public partial class MainWindow : Window
             $"Filter UTC: {_vm.Filter.FromUtc:yyyy-MM-dd HH:mm:ss.fff} - {_vm.Filter.ToUtc:yyyy-MM-dd HH:mm:ss.fff}, file name {_vm.Filter.FileNamePattern}\n" +
             $"{_vm.StatusText}\n" + (_vm.LastImport is { } li ? $"Last import: {li.Events:N0} events, {li.FailedCount} failed, log {li.LogPath}\n" : ""));
 
+        // Sixth and seventh images: the Top-N tab (busiest files, whole case) and a file trace, then a quiet
+        // export of each kind; the row counts go to -analysis.txt.
+        _vm.ClearFiltersCommand.Execute(null);
+        _vm.ResetTimeCommand.Execute(null);
+        await Task.Delay(400);
+        await _vm.RefreshAsync();
+        _vm.SelectedTab = 1;
+        await _vm.RefreshTopNAsync();
+        if (_vm.TopN.Rows.FirstOrDefault() is { } topRow) _vm.TopN.SelectedRow = topRow;
+        await SavePngAsync(stem + "-topn.png");
+
+        _vm.SelectedTab = 2;
+        _vm.Trace.SearchText = App.ScreenshotTrace;
+        await _vm.Trace.SearchAsync();
+        if (_vm.Trace.Matches.Count > 1) await _vm.Trace.TraceAsync(_vm.Trace.Matches[^1].Match.Uid);
+        if (_vm.Trace.Events.LastOrDefault(e => e.Event.Stage == "Install") is { } installed)
+        {
+            _vm.Trace.SelectedEvent = installed;
+            await Task.Delay(300);
+        }
+        await SavePngAsync(stem + "-trace.png");
+
+        var report = new System.Text.StringBuilder();
+        var f = _vm.Filter;
+        async Task Export(string kind, Func<CaseQuery, CsvWriter, CancellationToken, long> write)
+        {
+            var path = $"{stem}-{kind}.csv";
+            await _vm.ExportAsync(kind, kind, write, path);
+            report.AppendLine($"{kind}: {(File.Exists(path) ? File.ReadLines(path).Count() - 1 : -1):N0} rows  {_vm.StatusText}");
+        }
+        await Export("events", (q, csv, ct) => q.ExportEvents(f, null, csv, null, ct));
+        await Export("grid", (q, csv, _) => q.ExportGrid(f, [Dimensions.Category, Dimensions.Server, Dimensions.FileName], csv, TimeZoneInfo.Local));
+        if (_vm.TopN.Result is { } top)
+            await Export("topn", (_, csv, _) => { CaseQuery.ExportTopN(top, _vm.TopN.RangeMinutes, csv); return top.Rows.Count; });
+        if (_vm.Trace.Result is { } trace)
+        {
+            await Export("trace", (_, csv, _) => { CaseQuery.ExportTrace(trace, csv, null, includeHidden: false); return trace.Events.Count; });
+            report.AppendLine(_vm.Trace.Summary);
+            foreach (var m in _vm.Trace.Milestones) report.AppendLine($"  {m.Version,-16} {m.Server,-18} {m.First,-40} {m.Second,-22} {m.Installed,-26} {m.Outcome}");
+        }
+        report.AppendLine(_vm.TopN.Summary);
+        await File.WriteAllTextAsync(stem + "-analysis.txt", report.ToString());
+        _vm.SelectedTab = 0;
+
         // Fourth image: the Collect dialog for the first saved profile, after a real dry run.
         if (_vm.Session is { } session && _vm.ProfileNames.FirstOrDefault() is { } profile)
         {

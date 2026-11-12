@@ -105,7 +105,7 @@ src/
   DfsrAnalyser.Core          parsing, categorisation, name resolution, case DB access (no UI)
   DfsrAnalyser.Collection    Windows-only: LDAP discovery, WNet credentials, remote event log (net10.0-windows)
   DfsrAnalyser.App           WPF app (`DfsrAnalyser.exe`): MVVM, ScottPlot chart, tree grid
-  DfsrAnalyser.Cli           `dfsra` console harness: import / stats / verify / compare / files / bench
+  DfsrAnalyser.Cli           `dfsra` console harness: import / stats / top / trace / export / verify / compare / files / bench
 tools/Publish-Lab.ps1        self-contained app + CLI zip for an isolated lab VM
 docs/Lab-Test-Checklist.md   manual remote-collection tests with expected results
 tests/
@@ -348,7 +348,32 @@ Phase 6 is split so that the filters, which Top-N, file trace and export all dep
 
 ### 6b. Analysis extras
 
-Top-N, file trace and CSV export as described in §7, all honouring the new file name and time range filters.
+Top-N, file trace and CSV export as described in §7, all honouring the new file name and time range filters. The grid area becomes three tabs: *Pivot* (the existing tree), *Top-N* and *File trace*.
+
+**1. Top-N** (`CaseQuery.TopN`)
+
+- Lists: busiest files, folders, extensions, originating servers, partners, servers, categories, error codes, Class::Method. Each is a dimension plus a condition that drops events without that value (a Top-N of files should not rank "(none)").
+- Columns: rank, value, events, share (of the events in view that have a value for the list), distinct files (UIDs), servers, per minute, peak window and its time, first, last, 40-point sparkline. N = 10 / 25 / 50 / 100.
+- Under the full filter (facets, file name, time range, hidden). Double-click adds the value to the filter; on a file, *Trace this file* opens the trace.
+- DFSR lines carry no paths, so "folders" are events whose attributes mark a directory. Parent-folder roll-ups are out of scope.
+
+**2. File trace** (`CaseQuery.FindUids`, `CaseQuery.Trace`)
+
+- Keyed on the UID (§1a: same name ≠ same file). Enter a UID (`{GUID}-vN`) or a file name or wildcard pattern. The name lists matching UIDs with names, created-on server, versions, servers, event count, first and last; one match is traced directly.
+- Events: every event carrying the UID, on every server, in UTC order, plus same-server events without a UID that share the file's FID within the UID's time span. The USN-record line of a local change (*Local create/modify/delete*) carries only the FID, so without this the trace would miss the change itself.
+- Versions (GVSN): origin server (DB GUID → server), change time and kind, offered time, and per receiving server the received, transferred (RAWGET/RDCGET) and installed times with the outcome. Each is shown as the time since the change; the installed latency is the end-to-end replication time for that version. Milestones come from log signatures (§7 of the reference), not from categories, so an edited rules file does not break them: `UsnConsumer::*`, `Join::SubmitUpdate Sent:`, `InConnection::ReceiveUpdates`, `InConnection::LogTransferActivity`, `Meet::Install{Rename,Tombstone,Move,Overwrite} -> DONE`.
+- Stage = the event's category group (Local change, Outbound, Inbound, Install, Conflict, Staging, RDC…). Hidden categories follow *View ▸ Show hidden*. Optionally limited to the current time range (off by default: a trace should not stop at the zoom edge).
+- Entry points: the *File trace* tab, *Trace this file* in event detail and on Top-N file rows.
+- CLI: `dfsra trace --case <c> --uid <uid> | --name <pattern> [--all]`.
+
+**3. CSV export** (`Core/Query/CsvExport`)
+
+- *Events*: every event under the filter (or under a grid row), streamed, not paged. Columns: UTC time, server local time, server, category, group, severity, module, Class::Method, file name, UID, GVSN, origin server, partner, transfer type, error code, event ID, message, log file and line.
+- *Grid*: every combination of the chosen group-by levels under the filter, one row per leaf with a column per level, ordered like the tree (by level totals). Columns: events, per minute, first, last.
+- *Top-N* and *Trace*: the table as shown.
+- Format: UTF-8 with BOM (Excel), RFC 4180 quoting, invariant `yyyy-MM-dd HH:mm:ss.fff`. Times are UTC, and a `_local` column is added when the app displays local time. Text cells starting with `= + - @` get a leading `'` so spreadsheets do not run them as formulas (DFSR messages such as `-> DONE` would otherwise break).
+- App: an *Export* menu (events in view, grid, current Top-N, current trace) and *Export events* on a grid row. CLI: `dfsra export --case <c> --what events|grid|topn --out <file.csv> [--levels category,server,file] [--by files --top 25]` with the `stats` filters (`--from --to --utc --file --all`).
+- Tests: CSV quoting and formula guard; grid rows sum to the filtered count; Top-N on the fragments; trace of a fragment UID (FID-linked change line, milestones, latency); export round-trip counts.
 
 ### As built (6a, 2026-11-12)
 
@@ -359,6 +384,32 @@ Top-N, file trace and CSV export as described in §7, all honouring the new file
 - **Integrity**: `Core/Storage/CaseIntegrity`. `Verify`: duplicate event ids or file registrations, event ids not matching file/line, events without a file or in another server's file, stored vs actual event counts, orphan or repeated detail rows, earlier files still marked growing, uncategorised events (defects); waiting roll fragments, missing Indexes, events over a second outside their file's span, e.g. after a clock change (warnings). `Compare` attaches the other case read-only, matches files by server name, Index and first-line hash, and compares order-independent hashes of event fields, categories and nested detail over the lines both copies hold (`Identical`, `SamePrefix` for an active log copied at another time, `Differs`, `OnlyInA/B`). CLI: `verify`, `compare`, and `stats --from/--to [--utc] --file` (category × server for that view, via `CaseQuery.Matrix`).
 - **Verified locally**: 103 tests (28 new: pattern translation and filtering, facet wildcards, naming, preview, warnings, bad files incl. truncation and duplicates, import order, verify findings, compare prefix/differences). On the samples: CLI import, app import (`--import … --import-naming folder --screenshot`) and an import of every file one at a time **newest first** (so DC01's two split rolls wait and are stitched later) all give 442,170 events, `verify` OK, and `compare` *Identical* for all 10 files. **Compared with the lab-collected cases `samples/Cases/Lab1` and `Lab2`, all 10 shared files are identical event for event** (fields, categories, nested detail); the later files and the event log exist only in the lab cases. Filtered counts agree between app and CLI (e.g. `file_1*` in the typed middle third of the logs = 8 events, the 13:00:27 RDC add). The E10 bad-input set behaves as described in the checklist. The published lab zip runs.
 - **Lab tests**: section E of `docs/Lab-Test-Checklist.md` (E1–E13): app and CLI import compared with each other and with live collection, re-import, top-up by import, import into a collected case, newest-first import, fixed server name, bad input, cancel, `.evtx` import (covers DC01's event log while C8 is blocked), and the filters against `dfsra stats`.
+
+### As built (6b, 2026-11-12)
+
+- **Layout**: the grid area has three tabs, *Pivot* (the tree, unchanged), *Top-N* and *File trace*. There is a new *Export* menu. Event detail has a *Trace this file* link when the event carries a UID. The grid's context menu offers *Export events of this row…* and *Trace this file*.
+- **Top-N** (`CaseQuery.TopN`, `TopNLists`): nine lists (files, folders, extensions, originating servers, partners, servers, categories, error codes, Class::Method). Each pairs a dimension with a condition that drops events without a value. Rows reuse the grid's group query (count, first, last, peak window, trend) plus distinct UIDs and servers. Share is relative to the events in view that have a value. The list refreshes with every filter change while its tab is shown. Double-click adds the value to the filter; file rows can be traced.
+- **File trace** (`CaseQuery.FindUids`, `CaseQuery.Trace`, `TryParseUid`):
+  - Search takes a name, a wildcard pattern or a UID, and lists each UID with its names, created-on server, versions, servers, events and span. One match is traced directly.
+  - The trace takes the UID's events plus uid-less events with the same FID on the same server, within 5 s of the UID's span. These are the USN-record lines that carry the change kind (*Local create/modify/delete*). A FID-linked line takes the version of the nearest same-server line within 2 s.
+  - For each version it reports origin (DB GUID → server), change time and kind, offered time, and for each receiving server the received, transferred (type) and installed times with the outcome. The milestones come from log signatures only.
+  - Latencies are measured from the change, or from the first sighting when the origin's log is missing. The *Only the current time range* option is off by default. At most 50,000 events are loaded, and the summary says when the limit was reached. Hidden categories follow *View ▸ Show hidden*.
+- **CSV** (`CsvWriter`, `CaseQuery.ExportEvents/ExportGrid/ExportTopN/ExportTrace`, `GridLeaves`):
+  - Files are UTF-8 with BOM, CRLF, RFC 4180 quoting and invariant times. A local-time column follows each UTC column when the app shows local time; the CLI adds it unless `--utc` is given.
+  - Text starting with `= + - @` is prefixed with `'`.
+  - Events are streamed from one reader with a cancellable busy overlay, and a cancelled or failed export deletes its partial file.
+  - The grid export holds every leaf combination of the group-by levels, ordered by level totals, with a column per level.
+- **CLI**: `dfsra top`, `dfsra trace` (`--uid`, or `--name`, which lists matches or traces the only one) and `dfsra export --what events|grid|topn|trace`, all taking the `stats` filters.
+- **Found and fixed**:
+  - The field extractor didn't recognise a key with a bracketed qualifier, so names ran on into it: `fileName:file_1236.txt fileSize(approx):1204224` became the file name `file_1236.txt fileSize(approx):1204224`. This hit 1,982 sev-5 `Rdc::SeedFile::*` events in the lab samples, splitting those files' rows in the File name facet and Top-N.
+  - `fileSize(approx):` is now read as a key.
+  - Cases imported earlier are repaired once on open (`CaseStore.RepairQualifiedKeyNames`, recorded in `meta`), so old and new cases match event for event again. `dfsra compare` opens case B once first, so the repair also applies to it.
+- **Verified locally**:
+  - 135 tests pass (32 new). They use real lab lines in `tests/…/Fixtures/Trace`: a name reused by two UIDs, the FID-linked change line, milestones and the 287 ms latency, partial delivery, time limit, Top-N and grid sums, CSV quoting, formula guard, BOM, local column and round-trip, and the repair.
+  - App screenshot mode on the samples: the Top-N and trace tabs render, and the quiet exports match the CLI byte for byte (Top-N and events).
+  - Tracing `file_0005.txt` shows both lives. The DC01 create was RAWGET in 2.0 s and installed in 2.1 s. Then a Member01 modify by RDCGET installed in 0.19 s, then a Member01 delete installed as a tombstone in 4.75 s. The re-create on Member01 installed on DC01 in 0.287 s.
+  - A trace takes about 0.75 s, Top-N about 0.9 s, and exporting all 442k events takes 3.3 s (148 MB).
+  - After the repair, `compare` with the lab-collected `Lab1` is *Identical* for all 10 shared files.
 
 ---
 
@@ -372,7 +423,7 @@ Top-N, file trace and CSV export as described in §7, all honouring the new file
 | 3 ✅ | Main UI | Case open/create, upload, facet pane, chart, aggregate grid, lazy drill-down, event detail |
 | 4 ✅ | Name resolution | Config-dump parsing, DB GUID inference, origin/partner/RG/RF dimensions |
 | 5 ✅ (lab-verified except DC event log) | Remote collection | AD discovery (incl. SYSVOL/DCs), SMB copy, time-range selection, alternate credentials, collection profiles and top-up, optional event-log collection and `.evtx` upload |
-| 6 | Filtering, import verification, analysis extras | **6a built 2026-11-12** (lab round pending, checklist section E): wildcard file name filter, time range entry, import dialog and diagnostics, `dfsra verify`/`compare` (§7a). 6b: Top-N, file trace, CSV export |
+| 6 | Filtering, import verification, analysis extras | **6a built 2026-11-12** (lab round pending, checklist section E): wildcard file name filter, time range entry, import dialog and diagnostics, `dfsra verify`/`compare` (§7a). **6b built 2026-11-12** (checklist section F): Top-N, file trace with replication latency, CSV export (§7a) |
 | 7 | Packaging | Self-contained per-user installer, app icon, README |
 
 ---

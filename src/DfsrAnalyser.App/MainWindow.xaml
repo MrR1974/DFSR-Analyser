@@ -57,6 +57,12 @@
                     <MenuItem Header="Show _hidden categories" IsCheckable="True" IsChecked="{Binding ShowHidden}" />
                     <MenuItem Header="Show _local time (instead of UTC)" IsCheckable="True" IsChecked="{Binding UseLocalTime}" />
                 </MenuItem>
+                <MenuItem Header="_Export" IsEnabled="{Binding IsCaseOpen}">
+                    <MenuItem Header="_Events in view…" Command="{Binding ExportEventsCommand}" />
+                    <MenuItem Header="_Grid (every group-by combination)…" Command="{Binding ExportGridCommand}" />
+                    <MenuItem Header="_Top-N list…" Command="{Binding ExportTopNCommand}" />
+                    <MenuItem Header="File t_race…" Command="{Binding ExportTraceCommand}" />
+                </MenuItem>
             </Menu>
 
             <!-- ================= Toolbar ================= -->
@@ -220,8 +226,10 @@
 
                     <GridSplitter Grid.Row="1" HorizontalAlignment="Stretch" Background="{StaticResource Border}" />
 
+                    <TabControl Grid.Row="2" SelectedIndex="{Binding SelectedTab}" BorderThickness="0" Padding="0" Margin="0,2,0,0">
+                    <TabItem Header="Pivot">
                     <!-- Tree grid -->
-                    <DockPanel Grid.Row="2">
+                    <DockPanel>
                         <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="8,5">
                             <TextBlock Text="Group by" Style="{StaticResource ToolLabel}" Margin="0,0,4,0" />
                             <ComboBox ItemsSource="{Binding LevelChoices}" SelectedItem="{Binding Level1}" MinWidth="130" />
@@ -235,6 +243,13 @@
                         <ListView x:Name="Tree" ItemsSource="{Binding Rows}" SelectedItem="{Binding SelectedRow}"
                                   VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"
                                   ScrollViewer.IsDeferredScrollingEnabled="False" BorderThickness="0,1,0,0" BorderBrush="{StaticResource Border}">
+                            <ListView.ContextMenu>
+                                <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
+                                    <MenuItem Header="Export events of this row…" Command="{Binding ExportRowEventsCommand}"
+                                              CommandParameter="{Binding SelectedRow}" />
+                                    <MenuItem Header="Trace this file" Command="{Binding TraceRowFileCommand}" CommandParameter="{Binding SelectedRow}" />
+                                </ContextMenu>
+                            </ListView.ContextMenu>
                             <ListView.ItemContainerStyle>
                                 <Style TargetType="ListViewItem">
                                     <Setter Property="HorizontalContentAlignment" Value="Stretch" />
@@ -299,12 +314,178 @@
                             </ListView.View>
                         </ListView>
                     </DockPanel>
+                    </TabItem>
+
+                    <!-- ================= Top-N ================= -->
+                    <TabItem Header="Top-N">
+                        <DockPanel>
+                            <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="8,5">
+                                <ComboBox ItemsSource="{Binding TopN.Lists}" SelectedItem="{Binding TopN.SelectedList}" MinWidth="160" />
+                                <TextBlock Text="Top" Style="{StaticResource ToolLabel}" />
+                                <ComboBox ItemsSource="{Binding TopN.Sizes}" SelectedItem="{Binding TopN.Size}" MinWidth="60" />
+                                <Button Content="Export…" Margin="12,0,0,0" VerticalAlignment="Center" Style="{StaticResource LinkButton}" Command="{Binding ExportTopNCommand}" />
+                                <TextBlock Text="{Binding TopN.Summary}" Style="{StaticResource ToolLabel}" Margin="14,0,0,0" />
+                            </StackPanel>
+                            <ListView ItemsSource="{Binding TopN.Rows}" SelectedItem="{Binding TopN.SelectedRow}" BorderThickness="0,1,0,0" BorderBrush="{StaticResource Border}"
+                                      VirtualizingPanel.IsVirtualizing="True">
+                                <ListView.InputBindings>
+                                    <MouseBinding Gesture="LeftDoubleClick" Command="{Binding TopN.FilterToSelectedCommand}" />
+                                </ListView.InputBindings>
+                                <ListView.ContextMenu>
+                                    <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
+                                        <MenuItem Header="Add to filter" Command="{Binding TopN.FilterToSelectedCommand}" />
+                                        <MenuItem Header="Trace this file" Command="{Binding TopN.TraceSelectedCommand}" IsEnabled="{Binding TopN.CanTrace}" />
+                                        <Separator />
+                                        <MenuItem Header="Export this list…" Command="{Binding ExportTopNCommand}" />
+                                    </ContextMenu>
+                                </ListView.ContextMenu>
+                                <ListView.ItemContainerStyle>
+                                    <Style TargetType="ListViewItem">
+                                        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                    </Style>
+                                </ListView.ItemContainerStyle>
+                                <ListView.View>
+                                    <GridView>
+                                        <GridViewColumn Header="#" Width="36">
+                                            <GridViewColumn.CellTemplate>
+                                                <DataTemplate><TextBlock Text="{Binding Row.Rank}" HorizontalAlignment="Right" Foreground="{StaticResource Muted}" /></DataTemplate>
+                                            </GridViewColumn.CellTemplate>
+                                        </GridViewColumn>
+                                        <GridViewColumn Header="Value" Width="330">
+                                            <GridViewColumn.CellTemplate>
+                                                <DataTemplate><TextBlock Text="{Binding Value}" TextTrimming="CharacterEllipsis" ToolTip="{Binding Value}" /></DataTemplate>
+                                            </GridViewColumn.CellTemplate>
+                                        </GridViewColumn>
+                                        <GridViewColumn Header="Events" Width="80">
+                                            <GridViewColumn.CellTemplate>
+                                                <DataTemplate><TextBlock Text="{Binding Count}" HorizontalAlignment="Right" /></DataTemplate>
+                                            </GridViewColumn.CellTemplate>
+                                        </GridViewColumn>
+                                        <GridViewColumn Header="Share" Width="58">
+                                            <GridViewColumn.CellTemplate>
+                                                <DataTemplate><TextBlock Text="{Binding Share}" HorizontalAlignment="Right" /></DataTemplate>
+                                            </GridViewColumn.CellTemplate>
+                                        </GridViewColumn>
+                                        <GridViewColumn Header="Files" Width="58">
+                                            <GridViewColumn.CellTemplate>
+                                                <DataTemplate><TextBlock Text="{Binding Files}" HorizontalAlignment="Right" ToolTip="Distinct files (UIDs)" /></DataTemplate>
+                                            </GridViewColumn.CellTemplate>
+                                        </GridViewColumn>
+                                        <GridViewColumn Header="Servers" Width="58">
+                                            <GridViewColumn.CellTemplate>
+                                                <DataTemplate><TextBlock Text="{Binding Servers}" HorizontalAlignment="Right" /></DataTemplate>
+                                            </GridViewColumn.CellTemplate>
+                                        </GridViewColumn>
+                                        <GridViewColumn Header="Per min" Width="66">
+                                            <GridViewColumn.CellTemplate>
+                                                <DataTemplate><TextBlock Text="{Binding Rate}" HorizontalAlignment="Right" /></DataTemplate>
+                                            </GridViewColumn.CellTemplate>
+                                        </GridViewColumn>
+                                        <GridViewColumn Header="Peak / window" Width="90">
+                                            <GridViewColumn.CellTemplate>
+                                                <DataTemplate><TextBlock Text="{Binding Peak}" HorizontalAlignment="Right" /></DataTemplate>
+                                            </GridViewColumn.CellTemplate>
+                                        </GridViewColumn>
+                                        <GridViewColumn Header="Peak at" Width="98" DisplayMemberBinding="{Binding PeakAt}" />
+                                        <GridViewColumn Header="First" Width="98" DisplayMemberBinding="{Binding First}" />
+                                        <GridViewColumn Header="Last" Width="98" DisplayMemberBinding="{Binding Last}" />
+                                        <GridViewColumn Header="Trend" Width="110">
+                                            <GridViewColumn.CellTemplate>
+                                                <DataTemplate><ctl:Sparkline Values="{Binding Trend}" Width="96" Height="14" Fill="#7FA6E6" /></DataTemplate>
+                                            </GridViewColumn.CellTemplate>
+                                        </GridViewColumn>
+                                    </GridView>
+                                </ListView.View>
+                            </ListView>
+                        </DockPanel>
+                    </TabItem>
+
+                    <!-- ================= File trace ================= -->
+                    <TabItem Header="File trace">
+                        <DockPanel>
+                            <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="8,5">
+                                <TextBlock Text="File name or UID" Style="{StaticResource ToolLabel}" Margin="0,0,4,0" />
+                                <TextBox x:Name="TraceBox" Width="340" VerticalContentAlignment="Center" Text="{Binding Trace.SearchText, UpdateSourceTrigger=PropertyChanged}"
+                                         ToolTip="A file name (wildcards * ? allowed, as in the File name box) or a UID such as {BFF1148F-18FE-47A1-9C5C-617CAEB61A1E}-v1019">
+                                    <TextBox.InputBindings>
+                                        <KeyBinding Key="Enter" Command="{Binding Trace.SearchCommand}" />
+                                    </TextBox.InputBindings>
+                                </TextBox>
+                                <Button Content="Trace" Margin="6,0,0,0" Padding="12,1" VerticalAlignment="Center" Command="{Binding Trace.SearchCommand}" />
+                                <CheckBox Content="Only the current time range" Margin="14,0,0,0" VerticalAlignment="Center" IsChecked="{Binding Trace.LimitToRange}"
+                                          ToolTip="Off: the whole case, so a trace does not stop at the edge of the zoom" />
+                                <Button Content="Export…" Margin="14,0,0,0" VerticalAlignment="Center" Style="{StaticResource LinkButton}" Command="{Binding ExportTraceCommand}" />
+                            </StackPanel>
+                            <TextBlock DockPanel.Dock="Top" Text="{Binding Trace.Summary}" TextWrapping="Wrap" Margin="8,0,8,4" Foreground="#374151" />
+                            <ListBox DockPanel.Dock="Top" ItemsSource="{Binding Trace.Matches}" SelectedItem="{Binding Trace.SelectedMatch}" MaxHeight="110" Margin="8,0,8,4"
+                                     Visibility="{Binding Trace.HasMatches, Converter={StaticResource BoolToVis}}">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate><TextBlock Text="{Binding Text}" ToolTip="{Binding ToolTip}" /></DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                            <ListView DockPanel.Dock="Top" ItemsSource="{Binding Trace.Milestones}" MaxHeight="150" BorderThickness="0,1,0,1" BorderBrush="{StaticResource Border}">
+                                <ListView.ItemContainerStyle>
+                                    <Style TargetType="ListViewItem">
+                                        <Setter Property="ToolTip" Value="{Binding ToolTip}" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsOrigin}" Value="True">
+                                                <Setter Property="FontWeight" Value="SemiBold" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </ListView.ItemContainerStyle>
+                                <ListView.View>
+                                    <GridView>
+                                        <GridViewColumn Header="Version (GVSN)" Width="150" DisplayMemberBinding="{Binding Version}" />
+                                        <GridViewColumn Header="Server" Width="150" DisplayMemberBinding="{Binding Server}" />
+                                        <GridViewColumn Header="Change / received" Width="250" DisplayMemberBinding="{Binding First}" />
+                                        <GridViewColumn Header="Offered / transferred" Width="150" DisplayMemberBinding="{Binding Second}" />
+                                        <GridViewColumn Header="Installed (latency)" Width="170" DisplayMemberBinding="{Binding Installed}" />
+                                        <GridViewColumn Header="Outcome" Width="220" DisplayMemberBinding="{Binding Outcome}" />
+                                    </GridView>
+                                </ListView.View>
+                            </ListView>
+                            <ListView ItemsSource="{Binding Trace.Events}" SelectedItem="{Binding Trace.SelectedEvent}" BorderThickness="0"
+                                      VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling" FontFamily="Consolas" FontSize="11.5">
+                                <ListView.ItemContainerStyle>
+                                    <Style TargetType="ListViewItem">
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsError}" Value="True">
+                                                <Setter Property="Foreground" Value="{StaticResource ErrorText}" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </ListView.ItemContainerStyle>
+                                <ListView.View>
+                                    <GridView>
+                                        <GridViewColumn Header="Time" Width="140" DisplayMemberBinding="{Binding Time}" />
+                                        <GridViewColumn Header="+s" Width="62">
+                                            <GridViewColumn.CellTemplate>
+                                                <DataTemplate><TextBlock Text="{Binding Since}" HorizontalAlignment="Right" /></DataTemplate>
+                                            </GridViewColumn.CellTemplate>
+                                        </GridViewColumn>
+                                        <GridViewColumn Header="Server" Width="110" DisplayMemberBinding="{Binding Event.Server}" />
+                                        <GridViewColumn Header="Stage" Width="100" DisplayMemberBinding="{Binding Event.Stage}" />
+                                        <GridViewColumn Header="Category" Width="210" DisplayMemberBinding="{Binding Event.Category}" />
+                                        <GridViewColumn Header="Class::Method" Width="260" DisplayMemberBinding="{Binding Method}" />
+                                        <GridViewColumn Header="Message" Width="600" DisplayMemberBinding="{Binding Event.Message}" />
+                                    </GridView>
+                                </ListView.View>
+                            </ListView>
+                        </DockPanel>
+                    </TabItem>
+                    </TabControl>
 
                     <GridSplitter Grid.Row="3" HorizontalAlignment="Stretch" Background="{StaticResource Border}" />
 
                     <!-- Event detail -->
                     <DockPanel Grid.Row="4">
-                        <TextBlock DockPanel.Dock="Top" Text="Event detail" Style="{StaticResource PaneHeader}" Margin="8,4,8,2" />
+                        <DockPanel DockPanel.Dock="Top" Margin="8,4,8,2">
+                            <Button DockPanel.Dock="Right" Content="Trace this file" Style="{StaticResource LinkButton}" Command="{Binding TraceDetailFileCommand}"
+                                    Visibility="{Binding CanTraceDetail, Converter={StaticResource BoolToVis}}"
+                                    ToolTip="Every event of this file (UID) on every server, with replication latency" />
+                            <TextBlock Text="Event detail" Style="{StaticResource PaneHeader}" Margin="0" />
+                        </DockPanel>
                         <TextBox Text="{Binding DetailText, Mode=OneWay}" IsReadOnly="True" FontFamily="Consolas" FontSize="11.5"
                                  VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" BorderThickness="0,1,0,0"
                                  BorderBrush="{StaticResource Border}" Padding="6,4" TextWrapping="NoWrap" />

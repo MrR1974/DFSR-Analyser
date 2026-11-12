@@ -15,6 +15,11 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
+  <!-- Lines cut from the lab sample logs (lab domain only). Named .txt because *.log is git-ignored. -->
+  <ItemGroup>
+    <None Include="Fixtures\**\*.txt" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\..\src\DfsrAnalyser.Core\DfsrAnalyser.Core.csproj" />
   </ItemGroup>

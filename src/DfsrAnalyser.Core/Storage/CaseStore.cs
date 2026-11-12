@@ -44,6 +44,28 @@ public sealed class CaseStore : IDisposable
     {
         // v1 -> v2: categories and dropped-detail flag.
         Execute("ALTER TABLE log_file ADD COLUMN IF NOT EXISTS nested_dropped BOOLEAN DEFAULT FALSE");
+        RepairQualifiedKeyNames();
+    }
+
+    /// <summary>
+    /// Cases imported before 6b hold file names that ran on into a bracketed key, e.g.
+    /// "file_1236.txt fileSize(approx):1204224" (sev-5 RDC lines). Cuts them as the extractor now does and
+    /// recomputes the extension, once per case, so older cases match new imports event for event.
+    /// </summary>
+    private void RepairQualifiedKeyNames()
+    {
+        const string key = "repair_qualified_key_names";
+        if (Scalar<long>("SELECT count(*) FROM meta WHERE key = ?", key) > 0) return;
+        const string pattern = @"\s+[A-Za-z][A-Za-z0-9]*\([A-Za-z0-9]{1,16}\):.*$";
+        var name = $"rtrim(regexp_replace(file_name, '{pattern}', ''))";
+        var r = $"strpos(reverse({name}), '.')"; // 1-based position of the last dot, from the end
+        Execute($"""
+            UPDATE event SET
+                file_name = {name},
+                extension = CASE WHEN {r} > 1 AND {r} <= 16 AND {r} < length({name}) THEN lower(right({name}, {r} - 1)) END
+            WHERE regexp_matches(file_name, '{pattern}')
+            """);
+        Execute("INSERT INTO meta VALUES (?, '1')", key);
     }
 
     // ---------- taxonomy ----------

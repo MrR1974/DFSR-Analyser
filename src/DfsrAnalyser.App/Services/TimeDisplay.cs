@@ -23,4 +23,9 @@ public static class TimeDisplay
         : t.TotalHours >= 1 ? $"{t.TotalHours:0.#} h"
         : t.TotalMinutes >= 1 ? $"{t.TotalMinutes:0.#} min"
         : $"{t.TotalSeconds:0.#} s";
+
+    /// <summary>A replication delay: milliseconds shown under a minute ("0.287 s"), else as <see cref="Span"/>.</summary>
+    public static string Latency(TimeSpan t) => t.Duration().TotalMinutes < 1
+        ? (t < TimeSpan.Zero ? "-" : "") + t.Duration().TotalSeconds.ToString("0.000", CultureInfo.InvariantCulture) + " s"
+        : (t < TimeSpan.Zero ? "-" : "") + Span(t.Duration());
 }

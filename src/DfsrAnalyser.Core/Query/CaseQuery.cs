@@ -15,14 +15,18 @@ public sealed record EventRow(long EventId, DateTime TsUtc, string Server, strin
     string Severity, string? FileName, string Message, int NestedCount);
 
 public sealed record EventDetail(EventRow Row, IReadOnlyList<(string Name, string Value)> Fields, string? Nested,
-    bool NestedDropped, string? Group, string? Note, DateTime TsLocal, int LineNo, string FileName);
+    bool NestedDropped, string? Group, string? Note, DateTime TsLocal, int LineNo, string FileName)
+{
+    /// <summary>The file's UID ({GUID}-vN) when the line carries one; the key for a file trace.</summary>
+    public string? Uid { get; init; }
+}
 
 /// <summary>
 /// Read queries for the UI: facets, time series, aggregate grid rows and events, all under an
 /// <see cref="EventFilter"/>. Values are always passed as parameters; only trusted dimension SQL and
 /// computed numbers are spliced in.
 /// </summary>
-public sealed class CaseQuery(CaseStore store)
+public sealed partial class CaseQuery(CaseStore store)
 {
     public const int TrendBins = 40;
 
@@ -82,6 +86,9 @@ public sealed class CaseQuery(CaseStore store)
             }
         return (FromFor(dims), parts.Count == 0 ? "" : "WHERE " + string.Join(" AND ", parts), args);
     }
+
+    private static string AndCondition(string where, string? condition) =>
+        string.IsNullOrEmpty(condition) ? where : where.Length == 0 ? "WHERE " + condition : $"{where} AND ({condition})";
 
     // ------------------------------------------------------------------ extent and bucketing
 
@@ -208,9 +215,14 @@ public sealed class CaseQuery(CaseStore store)
     /// Rows for one level of the grid: the values of <paramref name="dim"/> under the filter and the parent
     /// path, with first/last time, the busiest bucket and a <see cref="TrendBins"/>-point trend over the range.
     /// </summary>
-    public List<GroupRow> Groups(EventFilter f, IReadOnlyList<(Dimension Dim, string Value)> path, Dimension dim, TimeSpan bucket, int limit = 500)
+    public List<GroupRow> Groups(EventFilter f, IReadOnlyList<(Dimension Dim, string Value)> path, Dimension dim, TimeSpan bucket, int limit = 500) =>
+        GroupsCore(f, path, dim, bucket, limit, null);
+
+    /// <param name="condition">Extra trusted SQL condition (no parameters), e.g. "e.file_name IS NOT NULL".</param>
+    private List<GroupRow> GroupsCore(EventFilter f, IReadOnlyList<(Dimension Dim, string Value)> path, Dimension dim, TimeSpan bucket, int limit, string? condition)
     {
         var (from, where, args) = WhereClause(f, path, dim);
+        where = AndCondition(where, condition);
         var stats = new List<(string V, long N, DateTime First, DateTime Last)>();
         using (var cmd = store.Command(
                    $"SELECT {dim.Sql} AS v, count(*) n, min(e.ts_utc), max(e.ts_utc) {from} {where} GROUP BY v ORDER BY n DESC, v LIMIT {limit}", [.. args]))
@@ -345,6 +357,9 @@ public sealed class CaseQuery(CaseStore store)
         };
         return new EventDetail(row,
             fields.Where(x => x.Item2 is not null).Select(x => (x.Item1, x.Item2!)).ToList(),
-            S(15), !r.IsDBNull(14) && r.GetBoolean(14), S(9), S(10), r.GetDateTime(11), r.GetInt32(12), r.GetString(13));
+            S(15), !r.IsDBNull(14) && r.GetBoolean(14), S(9), S(10), r.GetDateTime(11), r.GetInt32(12), r.GetString(13))
+        {
+            Uid = r.IsDBNull(24) || r.IsDBNull(25) ? null : FormatUid(r.GetGuid(24), r.GetInt64(25)),
+        };
     }
 }

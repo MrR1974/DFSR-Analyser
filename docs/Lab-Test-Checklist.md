@@ -1,7 +1,7 @@
 # DFSR Analyser — lab tests
 
 Manual tests for phase 5 (AD discovery, log collection over the admin share, alternate credentials, top-up,
-DFS Replication event log) and phase 6a (manual import, section E). Run them inside the lab; the developer
+DFS Replication event log), phase 6a (manual import, section E) and phase 6b (Top-N, file trace, CSV export, section F). Run them inside the lab; the developer
 cannot reach it.
 
 **Every collection command writes a diagnostic log** to `<case>\logs\collect-*.log` (the CLI prints the path;
@@ -103,6 +103,24 @@ Setup: on each server, copy `C:\Windows\debug\Dfsr*.log*` (including the active 
 | E13 | In `imp-app`: File name box `file*.txt`, then `*.txt;!~$*`; type a From/To inside the span and press Enter; toggle View ▸ local time | Every pane filters; the chart and *Zoom out* follow the typed range; local time shows the same range. Counts in the status bar equal `.\dfsra.exe stats --case C:\Cases\imp-app --file "<pattern>" --from "<from>" --to "<to>"` (local time; add `--utc` if the app shows UTC) |
 
 Send back: the `import-*.log` files, and the `verify` and `compare` output, for any step that did not match.
+
+## F. Top-N, file trace and CSV export — phase 6b
+
+Use `imp-app` (or any case with both servers). Before F3, make a few changes in the replicated folder on one member:
+create `trace-test.txt`, then edit it, wait a minute, and delete it. Then collect or top up so those logs are in the case.
+
+| # | Action | Expected |
+|---|---|---|
+| F1 | *Top-N* tab, *Busiest files*, Top 25; then *Originating servers*, *Partners*, *Extensions* | Ranked lists with share, files (UIDs), servers, per minute, peak and trend. Changing the facets, file name or time range changes the list. Double-click a row: it is added to the filter (facet ticked) |
+| F2 | `.\dfsra.exe top --case C:\Cases\imp-app --by files --top 10` (add `--from/--to/--file` to match the app) | Same ranking and counts as F1 (the CLI prints UTC) |
+| F3 | *File trace* tab: `trace-test.txt` → Enter | One UID, created on the member where you made the change. One version per change (create, modify, delete). For each: origin, change time, *offered*, and for the partner *received*, RAWGET/RDCGET, *installed* (latency) and outcome. The *Local create/modify/delete* line is marked *[by FID]* |
+| F4 | Delete `trace-test.txt` and create it again on the **other** member, top up, trace the name again | Two UIDs listed (same name ≠ same file); pick each one. The new UID's origin is the other member |
+| F5 | Pivot grid: expand to an event of a replicated file, then *Trace this file* in Event detail; right-click a File name row ▸ *Trace this file* | The trace tab opens on that file |
+| F6 | `.\dfsra.exe trace --case C:\Cases\imp-app --name trace-test.txt`, then `--uid` with one of the listed UIDs | Same milestones and latencies as the app |
+| F7 | Export ▸ *Events in view…*, *Grid…*, *Top-N list…*, *File trace…*; open each in Excel | Opens with columns intact (UTF-8). Messages such as `'-> DONE …` start with an apostrophe instead of showing `#NAME?`. With View ▸ local time, each time has a *(local)* column. The events file has as many rows as the status bar shows |
+| F8 | Start *Export ▸ Events in view* on the whole case and press *Cancel* | Stops; no partial file is left behind |
+| F9 | `.\dfsra.exe export --case C:\Cases\imp-app --what grid --levels category,server --out grid.csv` | Rows sum to the event count for the same filters (`stats`) |
+| F10 | Open a case imported or collected **before** this build (e.g. `imp-collect` from round E), then `compare` it with a fresh import of the same logs | `Result: OK`. File names that ran on into `fileSize(approx):…` (DC01 at severity 5) are repaired on open |
 
 ## Known behaviours to confirm (not failures)
 

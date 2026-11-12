@@ -1,0 +1,129 @@
+* DFSR Log Sequence:1 Index:2 Computer:DFSRMEMBER01 TimeZone:AUS Eastern Daylight Time (GMT+11:00) (TzId>AUS Eastern Standard Time<dIzT) Build:[Jan 01 2016 08:00:00 built by: WinBuild (FRE)]
+* Configuration logLevel:4 maxEntryCount:200000 maxFileCount:1000 logPath:\\.\C:\Windows\debug\
+20261111 13:13:27.807 3656 USNC  2871 UsnConsumer::CreateNewRecord LDB Inserting ID Record:
++	fid                             0x30000000204C9
++	usn                             0x49dbd578
++	uidVisible                      0
++	filtered                        0
++	journalWrapped                  0
++	slowRecoverCheck                0
++	pendingTombstone                0
++	internalUpdate                  0
++	dirtyShutdownMismatch           0
++	meetInstallUpdate               0
++	meetReanimated                  0
++	recUpdateTime                   16010101 00:00:00.000 GMT
++	present                         1
++	nameConflict                    0
++	attributes                      0x20
++	ghostedHeader                   0
++	data                            0
++	gvsn                            {BFF1148F-18FE-47A1-9C5C-617CAEB61A1E}-v1019
++	uid                             {BFF1148F-18FE-47A1-9C5C-617CAEB61A1E}-v1019
++	parent                          {B2683E40-9D0D-4BF7-A465-298E6B684DA8}-v1
++	fence                           Default (3)
++	clockDecrementedInDirtyShutdown 0
++	clock                           20261111 02:13:27.807 GMT (0x1dd71823d3d05c0)
++	createTime                      20261111 02:13:27.807 GMT
++	csId                            {B2683E40-9D0D-4BF7-A465-298E6B684DA8}
++	hash                            00000000-00000000-00000000-00000000
++	similarity                      00000000-00000000-00000000-00000000
++	name                            file_0005.txt
++	
+20261111 13:13:27.808 3656 USNC  2874 UsnConsumer::CreateNewRecord ID record created from USN_RECORD:
++	USN_RECORD:
++	RecordLength:        88
++	MajorVersion:        2
++	MinorVersion:        0
++	FileRefNumber:       0x30000000204C9
++	ParentFileRefNumber: 0x2000000012898
++	USN:                 0x49dbd578
++	TimeStamp:           20261111 13:13:27.807 AUS Eastern Standard Time
++	Reason:              Close Data Extend File Create 
++	SourceInfo:          0x0
++	SecurityId:          0x0
++	FileAttributes:      0x20
++	FileNameLength:      26
++	FileNameOffset:      60
++	FileName:            file_0005.txt
++	
+20261111 13:13:27.823 4404 JOIN  1201 Join::SubmitUpdate LDB Updating ID Record:
++	fid                             0x30000000204C9
++	usn                             0x49dbd578
++	uidVisible                      1
++	filtered                        0
++	journalWrapped                  0
++	slowRecoverCheck                0
++	pendingTombstone                0
++	internalUpdate                  0
++	dirtyShutdownMismatch           0
++	meetInstallUpdate               0
++	meetReanimated                  0
++	recUpdateTime                   20261111 02:13:27.807 GMT
++	present                         1
++	nameConflict                    0
++	attributes                      0x20
++	ghostedHeader                   0
++	data                            0
++	gvsn                            {BFF1148F-18FE-47A1-9C5C-617CAEB61A1E}-v1019
++	uid                             {BFF1148F-18FE-47A1-9C5C-617CAEB61A1E}-v1019
++	parent                          {B2683E40-9D0D-4BF7-A465-298E6B684DA8}-v1
++	fence                           Default (3)
++	clockDecrementedInDirtyShutdown 0
++	clock                           20261111 02:13:27.807 GMT (0x1dd71823d3d05c0)
++	createTime                      20261111 02:13:27.777 GMT
++	csId                            {B2683E40-9D0D-4BF7-A465-298E6B684DA8}
++	hash                            00000000-00000000-00000000-00000000
++	similarity                      00000000-00000000-00000000-00000000
++	name                            file_0005.txt
++	
+20261111 13:13:27.826 4404 JOIN  1253 Join::SubmitUpdate Sent: uid:{BFF1148F-18FE-47A1-9C5C-617CAEB61A1E}-v1019 gvsn:{BFF1148F-18FE-47A1-9C5C-617CAEB61A1E}-v1019 name:file_0005.txt connId:{DA74DAD4-33AF-4DE8-AAD9-E945D8C6F0B5} csId:{B2683E40-9D0D-4BF7-A465-298E6B684DA8} csName:DFSFolder
+20261111 13:13:27.838 4864 OUTC   591 OutConnection::OpenFile Received request for update:
++	present                         1
++	nameConflict                    0
++	attributes                      0x20
++	ghostedHeader                   0
++	data                            0
++	gvsn                            {BFF1148F-18FE-47A1-9C5C-617CAEB61A1E}-v1019
++	uid                             {BFF1148F-18FE-47A1-9C5C-617CAEB61A1E}-v1019
++	parent                          {B2683E40-9D0D-4BF7-A465-298E6B684DA8}-v1
++	fence                           Default (3)
++	clockDecrementedInDirtyShutdown 0
++	clock                           20261111 02:13:27.807 GMT (0x1dd71823d3d05c0)
++	createTime                      20261111 02:13:27.777 GMT
++	csId                            {B2683E40-9D0D-4BF7-A465-298E6B684DA8}
++	hash                            00000000-00000000-00000000-00000000
++	similarity                      00000000-00000000-00000000-00000000
++	name                            file_0005.txt
++	 rdcDesired:1 connId:{DA74DAD4-33AF-4DE8-AAD9-E945D8C6F0B5} rgName:dfsrtest.com\testnamespace\dfsfolder
+20261111 13:13:27.894 4864 CSMG  3605 ContentSetManager::UpdateHash LDB Updating ID Record:
++	fid                             0x30000000204C9
++	usn                             0x49dbd578
++	uidVisible                      1
++	filtered                        0
++	journalWrapped                  0
++	slowRecoverCheck                0
++	pendingTombstone                0
++	internalUpdate                  0
++	dirtyShutdownMismatch           0
++	meetInstallUpdate               0
++	meetReanimated                  0
++	recUpdateTime                   20261111 02:13:27.807 GMT
++	present                         1
++	nameConflict                    0
++	attributes                      0x20
++	ghostedHeader                   0
++	data                            0
++	gvsn                            {BFF1148F-18FE-47A1-9C5C-617CAEB61A1E}-v1019
++	uid                             {BFF1148F-18FE-47A1-9C5C-617CAEB61A1E}-v1019
++	parent                          {B2683E40-9D0D-4BF7-A465-298E6B684DA8}-v1
++	fence                           Default (3)
++	clockDecrementedInDirtyShutdown 0
++	clock                           20261111 02:13:27.807 GMT (0x1dd71823d3d05c0)
++	createTime                      20261111 02:13:27.777 GMT
++	csId                            {B2683E40-9D0D-4BF7-A465-298E6B684DA8}
++	hash                            21175657-ADC5CD92-18F82CD4-FB6B49FE
++	similarity                      0D2E131C-3C000319-043A0929-38091938
++	name                            file_0005.txt
++	
+20261111 13:13:27.921 4864 OUTC  2495 OutConnectionContentSetContext::OpenFile Sent file uid:{BFF1148F-18FE-47A1-9C5C-617CAEB61A1E}-v1019 gvsn:{BFF1148F-18FE-47A1-9C5C-617CAEB61A1E}-v1019 name:file_0005.txt fileSize:1239629 connId:{DA74DAD4-33AF-4DE8-AAD9-E945D8C6F0B5} rgName:dfsrtest.com\testnamespace\dfsfolder

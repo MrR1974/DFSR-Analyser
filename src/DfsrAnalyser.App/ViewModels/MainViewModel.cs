@@ -56,7 +56,19 @@ public sealed partial class MainViewModel : ObservableObject
         foreach (var d in Dimensions.All)
             Facets.Add(new FacetViewModel(d, this, expanded.Contains(d)));
         foreach (var r in _settings.RecentCases) RecentCases.Add(r);
+        TopN = new TopNViewModel(this);
+        Trace = new TraceViewModel(this);
     }
+
+    public TopNViewModel TopN { get; }
+    public TraceViewModel Trace { get; }
+
+    /// <summary>Tab under the chart: 0 Pivot, 1 Top-N, 2 File trace.</summary>
+    [ObservableProperty] private int _selectedTab;
+
+    /// <summary>UID of the event in the detail pane, when it has one (enables Trace this file).</summary>
+    [ObservableProperty] [NotifyPropertyChangedFor(nameof(CanTraceDetail))] private string? _detailUid;
+    public bool CanTraceDetail => DetailUid is not null;
 
     // ------------------------------------------------------------------ bindable state
 
@@ -125,6 +137,11 @@ public sealed partial class MainViewModel : ObservableObject
     partial void OnLevel2Changed(LevelChoice value) => RequestRefresh();
     partial void OnLevel3Changed(LevelChoice value) => RequestRefresh();
     partial void OnShowHiddenChanged(bool value) => Filter = Filter with { ShowHidden = value };
+
+    partial void OnSelectedTabChanged(int value)
+    {
+        if (value == 1) RefreshTopNAsync().Forget();
+    }
 
     partial void OnUseLocalTimeChanged(bool value)
     {
@@ -629,11 +646,19 @@ public sealed partial class MainViewModel : ObservableObject
             Rows.Clear();
             SelectedRow = null;
             DetailText = "";
+            DetailUid = null;
             if (levels.Count > 0)
             {
                 foreach (var g in r.groups)
                     Rows.Add(TreeRowViewModel.Group(this, null, levels[0], g, _rangeMinutes, SwatchFor(levels[0], g.Value)));
                 if (r.groups.Count == 0) Rows.Add(TreeRowViewModel.Note(this, null, "No events match the current filter."));
+            }
+
+            if (SelectedTab == 1) await RefreshTopNAsync();
+            if (Trace.Result is not null)
+            {
+                if (Trace.LimitToRange) await Trace.TraceAsync(Trace.Result.Uid);
+                else Trace.Show(); // display zone or hidden categories may have changed
             }
 
             foreach (var facet in Facets.Where(x => x.IsExpanded))
@@ -649,6 +674,27 @@ public sealed partial class MainViewModel : ObservableObject
         finally
         {
             if (version == _version) IsQuerying = false;
+        }
+    }
+
+    /// <summary>Re-runs the Top-N list for the current filter (only while its tab is shown).</summary>
+    internal async Task RefreshTopNAsync()
+    {
+        if (_session is null) return;
+        var version = _version;
+        var f = Filter;
+        var list = TopN.SelectedList;
+        var size = TopN.Size;
+        var bucket = _bucket;
+        var minutes = _rangeMinutes;
+        try
+        {
+            var result = await _session.RunAsync((_, q) => q.TopN(f, list, size, bucket));
+            if (version == _version && list == TopN.SelectedList && size == TopN.Size) TopN.Apply(result, minutes);
+        }
+        catch (Exception ex)
+        {
+            if (version == _version) ShowError("Top-N failed", ex);
         }
     }
 
@@ -754,10 +800,170 @@ public sealed partial class MainViewModel : ObservableObject
         {
             var d = await _session.RunAsync((_, q) => q.Detail(eventId));
             DetailText = d is null ? "" : FormatDetail(d);
+            DetailUid = d?.Uid;
         }
         catch (Exception ex)
         {
             DetailText = "Could not load the event: " + ex.Message;
+        }
+    }
+
+    internal void ShowEventDetail(long eventId) => ShowDetailAsync(eventId).Forget();
+
+    // ------------------------------------------------------------------ file trace
+
+    /// <summary>Opens the File trace tab for a file name (wildcards allowed) or a UID.</summary>
+    internal void TraceName(string text)
+    {
+        SelectedTab = 2;
+        Trace.SearchText = text;
+        Trace.SearchAsync().Forget();
+    }
+
+    [RelayCommand]
+    private void TraceDetailFile()
+    {
+        if (DetailUid is not { } uid) return;
+        SelectedTab = 2;
+        Trace.SearchText = uid;
+        Trace.TraceAsync(uid).Forget();
+    }
+
+    /// <summary>Grid context menu: traces the row's event (by UID) or the file name on its path.</summary>
+    [RelayCommand]
+    private void TraceRowFile(TreeRowViewModel? row)
+    {
+        row ??= SelectedRow;
+        if (row is null) return;
+        if (row.IsEvent)
+        {
+            if (DetailUid is not null) TraceDetailFile();
+            else StatusText = "This event carries no UID; pick a file name row, or an event with a UID.";
+            return;
+        }
+        var name = row.Path.LastOrDefault(p => p.Dim == Dimensions.FileName).Value;
+        if (name is null or Dimension.None) StatusText = "Group by File name to trace a file from the grid, or use the File trace tab.";
+        else TraceName(name);
+    }
+
+    // ------------------------------------------------------------------ CSV export
+
+    private TimeZoneInfo? ExportZone => UseLocalTime ? TimeZoneInfo.Local : null;
+
+    [RelayCommand]
+    private Task ExportEvents()
+    {
+        var f = Filter;
+        var zone = ExportZone;
+        return ExportAsync("events", "events in view", (q, csv, ct) => q.ExportEvents(f, null, csv, zone, ct));
+    }
+
+    [RelayCommand]
+    private Task ExportGrid()
+    {
+        var f = Filter;
+        var zone = ExportZone;
+        var levels = Levels;
+        return ExportAsync("grid", "grid rows", (q, csv, _) => q.ExportGrid(f, levels, csv, zone));
+    }
+
+    [RelayCommand]
+    private Task ExportTopN()
+    {
+        if (TopN.Result is not { } result)
+        {
+            MessageBox.Show("Open the Top-N tab first; the list shown there is exported.", "Export", MessageBoxButton.OK, MessageBoxImage.Information);
+            return Task.CompletedTask;
+        }
+        var minutes = TopN.RangeMinutes;
+        var zone = ExportZone;
+        return ExportAsync("top-" + result.List.Key, "Top-N rows", (_, csv, _) =>
+        {
+            CaseQuery.ExportTopN(result, minutes, csv, zone);
+            return result.Rows.Count;
+        });
+    }
+
+    [RelayCommand]
+    private Task ExportTrace()
+    {
+        if (Trace.Result is not { } trace)
+        {
+            MessageBox.Show("Trace a file first (File trace tab); that trace is exported.", "Export", MessageBoxButton.OK, MessageBoxImage.Information);
+            return Task.CompletedTask;
+        }
+        var hidden = ShowHidden;
+        var zone = ExportZone;
+        return ExportAsync("trace", "trace events", (_, csv, _) =>
+        {
+            CaseQuery.ExportTrace(trace, csv, zone, hidden);
+            return trace.Events.Count(e => hidden || !e.Hidden);
+        });
+    }
+
+    /// <summary>Events under one grid row (its path) and the current filter.</summary>
+    [RelayCommand]
+    private Task ExportRowEvents(TreeRowViewModel? row)
+    {
+        row ??= SelectedRow;
+        if (row is null) return Task.CompletedTask;
+        var path = row.IsEvent || row.IsMore ? row.Parent?.Path ?? [] : row.Path;
+        var f = Filter;
+        var zone = ExportZone;
+        return ExportAsync("events-" + string.Join("-", path.Select(p => p.Value)), "events", (q, csv, ct) => q.ExportEvents(f, path, csv, zone, ct));
+    }
+
+    /// <summary>Last export's file (screenshot mode checks it).</summary>
+    internal string? LastExportPath { get; private set; }
+
+    /// <param name="quietPath">Write here without asking or prompting (screenshot mode).</param>
+    internal async Task ExportAsync(string kind, string what, Func<CaseQuery, CsvWriter, CancellationToken, long> write, string? quietPath = null)
+    {
+        if (_session is null) return;
+        var path = quietPath;
+        if (path is null)
+        {
+            var invalid = Path.GetInvalidFileNameChars();
+            var safe = string.Concat($"{_session.Name}-{kind}".Select(c => invalid.Contains(c) ? '_' : c));
+            var dlg = new SaveFileDialog
+            {
+                Title = $"Export {what} to CSV",
+                Filter = "CSV (comma-separated)|*.csv",
+                FileName = (safe.Length > 120 ? safe[..120] : safe) + ".csv",
+            };
+            if (dlg.ShowDialog() != true) return;
+            path = dlg.FileName;
+        }
+
+        _importCts = new CancellationTokenSource();
+        var ct = _importCts.Token;
+        IsBusy = true;
+        BusyText = $"Exporting {what}…";
+        var sw = Stopwatch.StartNew();
+        try
+        {
+            var rows = await _session.RunAsync((_, q) =>
+            {
+                using var csv = CsvWriter.Create(path);
+                return write(q, csv, ct);
+            }, ct);
+            LastExportPath = path;
+            StatusText = $"Exported {rows:N0} {what} to {path} in {sw.Elapsed.TotalSeconds:N1} s (times {(UseLocalTime ? "UTC and local" : "UTC")}).";
+            if (quietPath is null &&
+                MessageBox.Show($"Exported {rows:N0} {what} to{Environment.NewLine}{path}{Environment.NewLine}{Environment.NewLine}Open it now?",
+                    "Export", MessageBoxButton.YesNo, MessageBoxImage.Information) == MessageBoxResult.Yes)
+                Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            try { File.Delete(path); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            if (ex is OperationCanceledException) StatusText = "Export cancelled; the partial file was removed.";
+            else ShowError("Export failed", ex);
+        }
+        finally
+        {
+            IsBusy = false;
+            _importCts = null;
         }
     }
 

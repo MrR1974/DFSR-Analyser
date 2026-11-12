@@ -1,0 +1,80 @@
+* DFSR Log Sequence:1 Index:1 Computer:DFSRDC01 TimeZone:AUS Eastern Daylight Time (GMT+11:00) (TzId>AUS Eastern Standard Time<dIzT) Build:[Jan 01 2016 08:00:00 built by: WinBuild (FRE)]
+* Configuration logLevel:4 maxEntryCount:200000 maxFileCount:1000 logPath:\\.\C:\Windows\debug\
+20261111 12:52:25.195 3080 USNC  2871 UsnConsumer::CreateNewRecord LDB Inserting ID Record:
++	fid                             0x300000001296B
++	usn                             0x496aa788
++	uidVisible                      0
++	filtered                        0
++	journalWrapped                  0
++	slowRecoverCheck                0
++	pendingTombstone                0
++	internalUpdate                  0
++	dirtyShutdownMismatch           0
++	meetInstallUpdate               0
++	meetReanimated                  0
++	recUpdateTime                   16010101 00:00:00.000 GMT
++	present                         1
++	nameConflict                    0
++	attributes                      0x20
++	ghostedHeader                   0
++	data                            0
++	gvsn                            {2314971A-C581-4D65-A9C1-9C297D1261E2}-v2038
++	uid                             {2314971A-C581-4D65-A9C1-9C297D1261E2}-v2038
++	parent                          {B2683E40-9D0D-4BF7-A465-298E6B684DA8}-v1
++	fence                           Default (3)
++	clockDecrementedInDirtyShutdown 0
++	clock                           20261111 01:52:25.194 GMT (0x1dd717f4ca985a8)
++	createTime                      20261111 01:52:25.194 GMT
++	csId                            {B2683E40-9D0D-4BF7-A465-298E6B684DA8}
++	hash                            00000000-00000000-00000000-00000000
++	similarity                      00000000-00000000-00000000-00000000
++	name                            file_0005.txt
++	
+20261111 12:52:25.195 3080 USNC  2874 UsnConsumer::CreateNewRecord ID record created from USN_RECORD:
++	USN_RECORD:
++	RecordLength:        88
++	MajorVersion:        2
++	MinorVersion:        0
++	FileRefNumber:       0x300000001296B
++	ParentFileRefNumber: 0x20000000128D8
++	USN:                 0x496aa788
++	TimeStamp:           20261111 12:52:25.194 AUS Eastern Standard Time
++	Reason:              Close Data Extend File Create 
++	SourceInfo:          0x0
++	SecurityId:          0x0
++	FileAttributes:      0x20
++	FileNameLength:      26
++	FileNameOffset:      60
++	FileName:            file_0005.txt
++	
+20261111 12:52:25.237 5480 JOIN  1201 Join::SubmitUpdate LDB Updating ID Record:
++	fid                             0x300000001296B
++	usn                             0x496aa788
++	uidVisible                      1
++	filtered                        0
++	journalWrapped                  0
++	slowRecoverCheck                0
++	pendingTombstone                0
++	internalUpdate                  0
++	dirtyShutdownMismatch           0
++	meetInstallUpdate               0
++	meetReanimated                  0
++	recUpdateTime                   20261111 01:52:25.195 GMT
++	present                         1
++	nameConflict                    0
++	attributes                      0x20
++	ghostedHeader                   0
++	data                            0
++	gvsn                            {2314971A-C581-4D65-A9C1-9C297D1261E2}-v2038
++	uid                             {2314971A-C581-4D65-A9C1-9C297D1261E2}-v2038
++	parent                          {B2683E40-9D0D-4BF7-A465-298E6B684DA8}-v1
++	fence                           Default (3)
++	clockDecrementedInDirtyShutdown 0
++	clock                           20261111 01:52:25.194 GMT (0x1dd717f4ca985a8)
++	createTime                      20261111 01:52:25.177 GMT
++	csId                            {B2683E40-9D0D-4BF7-A465-298E6B684DA8}
++	hash                            00000000-00000000-00000000-00000000
++	similarity                      00000000-00000000-00000000-00000000
++	name                            file_0005.txt
++	
+20261111 12:52:25.238 5480 JOIN  1253 Join::SubmitUpdate Sent: uid:{2314971A-C581-4D65-A9C1-9C297D1261E2}-v2038 gvsn:{2314971A-C581-4D65-A9C1-9C297D1261E2}-v2038 name:file_0005.txt connId:{24CB324F-D1A5-463A-8D72-A108E69D8C9F} csId:{B2683E40-9D0D-4BF7-A465-298E6B684DA8} csName:DFSFolder

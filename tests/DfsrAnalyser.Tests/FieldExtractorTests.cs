@@ -110,6 +110,16 @@ public class FieldExtractorTests
             tokens);
     }
 
+    [Fact]
+    public void Bracketed_key_qualifier_ends_a_file_name()
+    {
+        // Real line shape (lab sample): the name used to run on into "fileSize(approx):…".
+        var tokens = FieldExtractor.MessageTokens(
+            "RDC signatureLevels:1, uid:{BFF1148F-18FE-47A1-9C5C-617CAEB61A1E}-v2250 gvsn:{BFF1148F-18FE-47A1-9C5C-617CAEB61A1E}-v2250 fileName:file_1236.txt fileSize(approx):1204224 csId:{B2683E40-9D0D-4BF7-A465-298E6B684DA8} enableSim=1");
+        Assert.Contains(("fileName", "file_1236.txt"), tokens);
+        Assert.Contains(("fileSize(approx)", "1204224"), tokens);
+    }
+
     [Theory]
     [InlineData("{2314971A-C581-4D65-A9C1-9C297D1261E2}-v3035", 3035)]
     [InlineData("2314971A-C581-4D65-A9C1-9C297D1261E2-v1", 1)]

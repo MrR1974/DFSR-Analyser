@@ -1,0 +1,4 @@
+* DFSR Log Sequence:1 Index:1 Computer:DFSRMEMBER01 TimeZone:AUS Eastern Daylight Time (GMT+11:00) (TzId>AUS Eastern Standard Time<dIzT) Build:[Jan 01 2016 08:00:00 built by: WinBuild (FRE)]
+* Configuration logLevel:4 maxEntryCount:200000 maxFileCount:1000 logPath:\\.\C:\Windows\debug\
+20261111 12:52:25.244 3828 INCO  3065 InConnection::ReceiveUpdates Received: uid:{2314971A-C581-4D65-A9C1-9C297D1261E2}-v2038 gvsn:{2314971A-C581-4D65-A9C1-9C297D1261E2}-v2038 fileName:file_0005.txt session:5 connId:{24CB324F-D1A5-463A-8D72-A108E69D8C9F} csId:{B2683E40-9D0D-4BF7-A465-298E6B684DA8} csName:DFSFolder
+20261111 12:52:25.244 6980 MEET  1333 Meet::Install Retries:0 updateName:file_0005.txt uid:{2314971A-C581-4D65-A9C1-9C297D1261E2}-v2038 gvsn:{2314971A-C581-4D65-A9C1-9C297D1261E2}-v2038 connId:{24CB324F-D1A5-463A-8D72-A108E69D8C9F} csName:DFSFolder updateType:remote
