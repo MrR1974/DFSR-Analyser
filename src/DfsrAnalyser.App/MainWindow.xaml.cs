@@ -37,7 +37,11 @@ public partial class MainWindow : Window
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
         if (App.StartupCase is { } folder) await _vm.OpenCaseAsync(folder);
-        if (App.StartupImport is { } import) await _vm.ImportAsync([import]);
+        if (App.StartupImport is { } import)
+        {
+            if (App.ScreenshotPath is { } shot && _vm.Session is { } session) await ScreenshotImportDialogAsync(session, import, shot);
+            await _vm.ImportAsync([import], StartupImportOptions, quiet: App.ScreenshotPath is not null);
+        }
         if (App.ScreenshotPath is { } png) await ScreenshotAsync(png);
     }
 
@@ -163,6 +167,28 @@ public partial class MainWindow : Window
 
     // ------------------------------------------------------------------ screenshot mode
 
+    private static Core.Import.ImportOptions StartupImportOptions => App.ImportNaming.ToLowerInvariant() switch
+    {
+        "header" => new(),
+        "folder" => new(Core.Import.ServerNaming.FolderName),
+        _ => new(Core.Import.ServerNaming.Fixed, App.ImportNaming),
+    };
+
+    /// <summary>The Import dialog for the start-up import, after its scan, saved as &lt;png&gt;-import.png.</summary>
+    private async Task ScreenshotImportDialogAsync(CaseSession session, string import, string png)
+    {
+        var ivm = new ImportViewModel(session, [import]);
+        var options = StartupImportOptions;
+        ivm.UseFolderNames = options.Naming == Core.Import.ServerNaming.FolderName;
+        ivm.UseFixedName = options.Naming == Core.Import.ServerNaming.Fixed;
+        if (ivm.UseFixedName) ivm.FixedName = options.FixedName!;
+        var dlg = new ImportWindow(ivm) { Owner = this };
+        dlg.Show();
+        await ivm.RescanAsync();
+        await SavePngAsync(Path.Combine(Path.GetDirectoryName(png)!, Path.GetFileNameWithoutExtension(png) + "-import.png"), dlg);
+        dlg.Close();
+    }
+
     /// <summary>
     /// Exercises the main views (chart, three grid levels, event detail) on the open case, renders the
     /// window to a PNG and exits. Lets the UI be checked without a person at the screen.
@@ -214,6 +240,39 @@ public partial class MainWindow : Window
         await _vm.RefreshAsync();
         foreach (var r in _vm.Rows.Where(r => r.CanExpand).ToList()) await _vm.ExpandAsync(r);
         await SavePngAsync(Path.Combine(Path.GetDirectoryName(png)!, Path.GetFileNameWithoutExtension(png) + "-controls.png"));
+
+        // Fifth image: typed time range (the middle third of the logs) and a wildcard file name filter.
+        _vm.StackBy = Dimensions.Category;
+        _vm.Level1 = _vm.LevelChoices.First(l => l.Dimension == Dimensions.Category);
+        _vm.Level2 = _vm.OptionalLevelChoices.First(l => l.Dimension == Dimensions.Server);
+        _vm.Level3 = _vm.OptionalLevelChoices.First(l => l.Dimension == Dimensions.FileName);
+        _vm.ClearFiltersCommand.Execute(null);
+        _vm.ResetTimeCommand.Execute(null);
+        await Task.Delay(400);
+        await _vm.RefreshAsync();
+        if (_vm.FromDate is { } fd && _vm.ToDate is { } td &&
+            TimeSpan.TryParse(_vm.FromTime, System.Globalization.CultureInfo.InvariantCulture, out var ft) &&
+            TimeSpan.TryParse(_vm.ToTime, System.Globalization.CultureInfo.InvariantCulture, out var tt))
+        {
+            DateTime start = fd.Date + ft, end = td.Date + tt;
+            var third = TimeSpan.FromSeconds(Math.Round((end - start).TotalSeconds / 3));
+            DateTime a = start + third, b = start + third + third;
+            _vm.FromDate = a.Date;
+            _vm.FromTime = a.ToString("HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture);
+            _vm.ToDate = b.Date;
+            _vm.ToTime = b.ToString("HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture);
+            _vm.ApplyTimeRangeCommand.Execute(null);
+        }
+        _vm.FileNamePatternText = App.ScreenshotFilePattern;
+        await Task.Delay(600);
+        await _vm.RefreshAsync();
+        foreach (var r in _vm.Rows.Where(r => r.CanExpand).Take(2).ToList()) await _vm.ExpandAsync(r);
+        var stem = Path.Combine(Path.GetDirectoryName(png)!, Path.GetFileNameWithoutExtension(png));
+        await SavePngAsync(stem + "-filters.png");
+        await File.WriteAllTextAsync(stem + "-filters.txt",
+            $"From {_vm.FromDate:yyyy-MM-dd} {_vm.FromTime}  To {_vm.ToDate:yyyy-MM-dd} {_vm.ToTime}  ({TimeDisplay.ZoneLabel})\n" +
+            $"Filter UTC: {_vm.Filter.FromUtc:yyyy-MM-dd HH:mm:ss.fff} - {_vm.Filter.ToUtc:yyyy-MM-dd HH:mm:ss.fff}, file name {_vm.Filter.FileNamePattern}\n" +
+            $"{_vm.StatusText}\n" + (_vm.LastImport is { } li ? $"Last import: {li.Events:N0} events, {li.FailedCount} failed, log {li.LogPath}\n" : ""));
 
         // Fourth image: the Collect dialog for the first saved profile, after a real dry run.
         if (_vm.Session is { } session && _vm.ProfileNames.FirstOrDefault() is { } profile)

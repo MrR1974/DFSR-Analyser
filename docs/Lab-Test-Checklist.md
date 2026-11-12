@@ -1,7 +1,8 @@
-# DFSR Analyser — remote collection lab test
+# DFSR Analyser — lab tests
 
 Manual tests for phase 5 (AD discovery, log collection over the admin share, alternate credentials, top-up,
-DFS Replication event log). Run them inside the lab; the developer cannot reach it.
+DFS Replication event log) and phase 6a (manual import, section E). Run them inside the lab; the developer
+cannot reach it.
 
 **Every collection command writes a diagnostic log** to `<case>\logs\collect-*.log` (the CLI prints the path;
 the Collect dialog shows it with an *Open log file* link). When a step does not match the expected result,
@@ -67,6 +68,41 @@ Record for each step: pass / fail, and the log file name if it failed.
 | D8 | Tick the event-log option and collect | Main window: *Source* facet shows *Event log*; the *Event log* group appears in Category |
 | D9 | Collect ▸ Import event log (.evtx)… with a DFS Replication log exported from Event Viewer | Asks for the server name; records appear as in D8 |
 | D10 | Start a collection with *Everything on the servers* and press *Cancel* mid-copy | Stops; `Cancelled.` in the log; the case keeps what was committed; a later collection resumes |
+
+## E. Manual import (app and CLI) — phase 6a
+
+Proves that importing log files by hand gives exactly the same case as collecting them, and that bad input
+fails file by file. **Every import writes `<case>\logs\import-*.log`** (the app's summary box and status bar give
+the path; the CLI prints it). Two checks are used throughout:
+
+- `.\dfsra.exe verify --case <case>`: duplicate events or files, miscounted files, files still marked as growing,
+  waiting roll fragments, missing Indexes. `Result: OK` means no defects (warnings explain themselves).
+- `.\dfsra.exe compare --case <a> --case <b>`: matches files by server, Index and first line, then compares every
+  event (fields, category, nested detail) over the lines both copies hold. `Result: OK` means no shared file
+  differs; `SamePrefix` means an active log copied at a different time, identical where they overlap.
+
+Close the app before running `verify` or `compare` on a case it has open (the case database allows one writer).
+
+Setup: on each server, copy `C:\Windows\debug\Dfsr*.log*` (including the active `.log`) into
+`C:\Import\<server>\` on the test VM, e.g. `C:\Import\DFSRDC01\`, `C:\Import\DFSRMEMBER01\`.
+
+| # | Action | Expected |
+|---|---|---|
+| E1 | App: File ▸ New case `C:\Cases\imp-app`, File ▸ Import folder… `C:\Import`, choose **From the sub-folder each log is in** | The dialog lists every file with server, Index, header computer, first event, status *new*; one summary line per server; no warnings. *Import* → a summary box per server (all imported, 0 failed) and the log path |
+| E2 | `.\dfsra.exe import --case C:\Cases\imp-cli --per-folder C:\Import` | Same per-server counts as E1; prints the import log path |
+| E3 | `verify` on both cases; `compare --case C:\Cases\imp-app --case C:\Cases\imp-cli` | Both `Result: OK`; compare: every file `Identical` |
+| E4 | Collect the same servers live (step C or D) into `C:\Cases\imp-collect`, *Everything on the servers*; then `compare --case C:\Cases\imp-app --case C:\Cases\imp-collect` | `Result: OK`. Files copied in setup are `Identical`, the active logs `SamePrefix` (collected later); files that rolled since are *OnlyInB* |
+| E5 | App: import `C:\Import` into `imp-app` again (same naming) | The dialog shows every file *already in case* and *Import* is disabled (nothing to do) |
+| E6 | Generate DFSR activity, copy the logs again into `C:\Import2\<server>\`, import into `imp-app` | The grown active log shows *in case, will resume*, new Indexes *new*; if the active log rolled, its `.gz` is recognised as the same Index. `verify`: OK |
+| E7 | Import `C:\Import` into `imp-collect` (the collected case) | Shared files *already in case*; only files the collection did not take are imported; `verify`: OK |
+| E8 | New case `imp-order`: import one server's files one at a time, **highest Index first**, then `compare` with `imp-cli` | After the first files, `verify` warns that opening lines wait for an earlier Index; once all are in: `verify` OK, `compare` all `Identical` |
+| E9 | New case: Import folder `C:\Import\DFSRDC01` with **One name for every file** = `OTHERNAME` | Dialog warns *the log headers say Computer:DFSRDC01*; events are filed under OTHERNAME (Server facet) |
+| E10 | Bad input, in a copy of one server's folder (`C:\Import-bad\DFSRDC01`): add a text file renamed `Dfsr09999.log` and an empty `Dfsr09998.log`; cut `Dfsr00002.log.gz` short in place (`$b=[IO.File]::ReadAllBytes("$PWD\Dfsr00002.log.gz"); [IO.File]::WriteAllBytes("$PWD\Dfsr00002.log.gz", $b[0..($b.Length/2)])`); copy `Dfsr00003.log.gz` to `Dfsr00003 - Copy.log.gz`. Import into a new case, naming from sub-folders | Dialog marks the text and empty files *unreadable* and warns that Index 3 appears in two files. After import: those two and `Dfsr00002.log.gz` fail (*truncated or damaged … Copy it again*); one Index 3 copy is skipped as *duplicate*; everything else imports; `verify`: OK, with a warning that Index 2 is missing |
+| E11 | Import a large folder and press *Cancel* mid-way; import it again | Cancel keeps committed files; the second import completes; `verify` OK; counts equal E2 |
+| E12 | On each server, export the *DFS Replication* event log from Event Viewer (.evtx); Collect ▸ Import event log (.evtx)… into `imp-app` | Asks for the server name; records on the timeline (*Source* = Event log). Covers DFSRDC01's event log while C8 is blocked |
+| E13 | In `imp-app`: File name box `file*.txt`, then `*.txt;!~$*`; type a From/To inside the span and press Enter; toggle View ▸ local time | Every pane filters; the chart and *Zoom out* follow the typed range; local time shows the same range. Counts in the status bar equal `.\dfsra.exe stats --case C:\Cases\imp-app --file "<pattern>" --from "<from>" --to "<to>"` (local time; add `--utc` if the app shows UTC) |
+
+Send back: the `import-*.log` files, and the `verify` and `compare` output, for any step that did not match.
 
 ## Known behaviours to confirm (not failures)
 

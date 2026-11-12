@@ -156,6 +156,63 @@ public sealed class QueryTests : IDisposable
         Assert.Equal(3, _q.CountEvents(All with { FromUtc = T0.AddSeconds(3), ToUtc = T0.AddSeconds(10) }));
     }
 
+    [Theory]
+    [InlineData("file_?.txt", 4)]          // file_0..3 on DC01; file_10.txt has two characters
+    [InlineData("FILE_1?.TXT", 4)]         // case-insensitive; the hidden dominance check stays hidden
+    [InlineData("*.docx", 2)]
+    [InlineData("*.txt;*.docx", 10)]
+    [InlineData("*.txt;!file_1*", 3)]       // file_0, 2, 3 (file_1.txt and file_1x.txt excluded)
+    [InlineData("!*.docx", 8)]
+    [InlineData("file_1", 0)]               // no wildcard = whole name
+    [InlineData("file_10.txt", 1)]
+    [InlineData(" file_10.txt ; ", 1)]
+    [InlineData("file%", 0)]                // LIKE characters are literal
+    [InlineData("file_%.txt", 0)]
+    [InlineData("", 10)]
+    public void File_name_pattern_filters_events(string pattern, long expected) =>
+        Assert.Equal(expected, _q.CountEvents(All with { FileNamePattern = pattern }));
+
+    [Fact]
+    public void File_name_pattern_combines_with_hidden_categories_time_and_facets()
+    {
+        Assert.Equal(5, _q.CountEvents(All with { FileNamePattern = "file_1?.txt", ShowHidden = true }));
+        Assert.Equal(2, _q.CountEvents(All with { FileNamePattern = "file_1*", FromUtc = T0.AddSeconds(11), ToUtc = T0.AddSeconds(13) }));
+
+        var f = All with { FileNamePattern = "*.txt" };
+        Assert.Equal([("DFSRDC01", 4L), ("DFSRMEMBER01", 4L)], _q.Facet(Dimensions.Server, f).Select(v => (v.Value, v.Count)));
+        Assert.Equal([("txt", 8L)], _q.Facet(Dimensions.Extension, f).Select(v => (v.Value, v.Count)));
+        Assert.Equal(
+            [("Transfer: RAWGET (full)", "DFSRMEMBER01", 4L), ("Update offered to partner", "DFSRDC01", 4L)],
+            _q.Matrix(f, Dimensions.Category, Dimensions.Server));
+        Assert.Null(f.ClearAll().FileNamePattern);
+    }
+
+    [Fact]
+    public void Facet_search_accepts_wildcards()
+    {
+        Assert.Equal(["file_4.docx", "file_5.docx"], _q.Facet(Dimensions.FileName, All, search: "*.DOCX").Select(v => v.Value).Order(StringComparer.Ordinal));
+        Assert.Equal(["file_4.docx", "file_5.docx"], _q.Facet(Dimensions.FileName, All, search: "!*.txt").Select(v => v.Value).Order(StringComparer.Ordinal));
+        Assert.Equal(["file_1.txt"], _q.Facet(Dimensions.FileName, All, search: "file_?.txt;!file_0*;!file_2*;!file_3*").Select(v => v.Value));
+    }
+
+    [Theory]
+    [InlineData("*.txt", "%.txt")]
+    [InlineData("file_?", @"file\__")]
+    [InlineData(@"100%\a", @"100\%\\a")]
+    [InlineData("~$*", "~$%")]
+    public void Wildcards_translate_to_escaped_like_patterns(string pattern, string like) =>
+        Assert.Equal(like, FileNamePattern.ToLike(pattern));
+
+    [Fact]
+    public void Pattern_lists_split_into_includes_and_excludes()
+    {
+        var p = FileNamePattern.Parse(" *.docx ;*.xlsx; ! ~$* ;;!");
+        Assert.Equal(["*.docx", "*.xlsx"], p.Includes);
+        Assert.Equal(["~$*"], p.Excludes);
+        Assert.Equal("*.docx;*.xlsx;!~$*", p.ToString());
+        Assert.True(FileNamePattern.Parse(" ; ").IsEmpty);
+    }
+
     [Fact]
     public void Auto_bucket_picks_the_smallest_preset_that_fits()
     {

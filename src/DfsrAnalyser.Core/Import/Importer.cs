@@ -4,13 +4,31 @@ using DfsrAnalyser.Core.Storage;
 
 namespace DfsrAnalyser.Core.Import;
 
-public enum FileOutcome { Imported, Resumed, Unchanged, Failed }
+public enum FileOutcome
+{
+    Imported,
+    Resumed,
+    Unchanged,
+    Failed,
+    /// <summary>The same log (server, Index, first line) appears more than once in one import; a better copy was used.</summary>
+    Duplicate,
+}
 
 public sealed record FileImportResult(
     string Path, string Server, int Index, int Sequence, FileOutcome Outcome,
     int Events, int Lines, TimeSpan Elapsed, string? Error = null, TimeSpan ParseTime = default, TimeSpan CommitTime = default, TimeSpan LoadTime = default);
 
 public sealed record ImportProgress(string Path, int FileNumber, int FileCount, long EventsSoFar);
+
+/// <summary>A file to import and the server to file it under (null = the header's Computer name).</summary>
+public sealed record ImportItem(string Path, string? Server = null);
+
+public enum PreviewStatus { New, Resume, InCase, Unreadable }
+
+/// <summary>What an import would do with one file, worked out without writing to the case.</summary>
+public sealed record ImportPreviewItem(
+    string Path, string Server, string? HeaderComputer, int Index, int Sequence, DateTime? FirstEventUtc,
+    DateTime LastWriteUtc, long SizeBytes, PreviewStatus Status, string? Error = null);
 
 /// <summary>
 /// Imports DFSR debug log files into a case in three stages:
@@ -54,21 +72,73 @@ public sealed class Importer(CaseStore store)
 
     /// <param name="serverName">Server to file the logs under; when null, each file's header Computer name is used.</param>
     public List<FileImportResult> Import(IEnumerable<string> files, string? serverName = null,
+        IProgress<ImportProgress>? progress = null, CancellationToken ct = default) =>
+        Import(files.Select(f => new ImportItem(f, serverName)), progress, ct);
+
+    /// <summary>
+    /// Header, first event and case status of each file, without writing anything. Unreadable files are
+    /// reported with <see cref="PreviewStatus.Unreadable"/> rather than thrown.
+    /// </summary>
+    public List<ImportPreviewItem> Preview(IEnumerable<ImportItem> items)
+    {
+        var list = new List<ImportPreviewItem>();
+        foreach (var item in items)
+        {
+            var info = new FileInfo(item.Path);
+            var size = info.Exists ? info.Length : 0;
+            var written = info.Exists ? info.LastWriteTimeUtc : default;
+            try
+            {
+                var probe = Probe.Read(item.Path, item.Server);
+                var h = probe.Header;
+                DateTime? first = null;
+                if (probe.FirstLocalTime is { } local)
+                    try { first = new LocalTimeConverter(h).ToUtc(local); }
+                    catch (Exception ex) when (ex is ArgumentException or TimeZoneNotFoundException or InvalidTimeZoneException) { }
+
+                var status = PreviewStatus.New;
+                if (store.FindServerId(probe.Server) is { } serverId && store.FindFile(serverId, h.Index, probe.FirstLineHash) is { } existing)
+                    status = existing.IsComplete ? PreviewStatus.InCase : PreviewStatus.Resume;
+                list.Add(new ImportPreviewItem(item.Path, probe.Server, h.Computer, h.Index, h.Sequence, first, written, size, status));
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException)
+            {
+                list.Add(new ImportPreviewItem(item.Path, item.Server ?? "?", null, 0, 0, null, written, size, PreviewStatus.Unreadable, ex.Message));
+            }
+        }
+        return [.. list.OrderBy(p => p.Server, StringComparer.OrdinalIgnoreCase).ThenBy(p => p.Index).ThenBy(p => p.Path, StringComparer.OrdinalIgnoreCase)];
+    }
+
+    /// <summary>Imports each file under its own server name (null = the header's Computer name).</summary>
+    public List<FileImportResult> Import(IEnumerable<ImportItem> items,
         IProgress<ImportProgress>? progress = null, CancellationToken ct = default)
     {
         var results = new List<FileImportResult>();
 
         // ---- probe ----
         var probes = new List<Probe>();
-        foreach (var path in files)
+        foreach (var item in items)
         {
-            try { probes.Add(Probe.Read(path, serverName)); }
+            try { probes.Add(Probe.Read(item.Path, item.Server)); }
             catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException)
             {
-                results.Add(new FileImportResult(path, serverName ?? "?", 0, 0, FileOutcome.Failed, 0, 0, TimeSpan.Zero, ex.Message));
+                results.Add(new FileImportResult(item.Path, item.Server ?? "?", 0, 0, FileOutcome.Failed, 0, 0, TimeSpan.Zero, ex.Message));
             }
         }
-        probes = probes
+        // The same log twice in one batch (copied into two folders, or as both .log and .log.gz): keep the
+        // rolled .gz over an active .log, otherwise the larger copy, then the plainer name (Dfsr00003.log.gz over "… - Copy").
+        var kept = new List<Probe>();
+        foreach (var g in probes.GroupBy(p => (Server: p.Server.ToUpperInvariant(), p.Header.Index, p.FirstLineHash)))
+        {
+            var ranked = g.OrderByDescending(p => p.Path.EndsWith(".gz", StringComparison.OrdinalIgnoreCase))
+                .ThenByDescending(p => new FileInfo(p.Path).Length).ThenBy(p => Path.GetFileName(p.Path).Length)
+                .ThenBy(p => p.Path, StringComparer.OrdinalIgnoreCase).ToList();
+            kept.Add(ranked[0]);
+            foreach (var dup in ranked.Skip(1))
+                results.Add(new FileImportResult(dup.Path, dup.Server, dup.Header.Index, dup.Header.Sequence, FileOutcome.Duplicate, 0, 0,
+                    TimeSpan.Zero, $"same log as {ranked[0].Path}"));
+        }
+        probes = kept
             .OrderBy(p => p.Server, StringComparer.OrdinalIgnoreCase)
             .ThenBy(p => p.Header.Index)
             .ToList();
@@ -306,7 +376,7 @@ public sealed class Importer(CaseStore store)
     // ---------------------------------------------------------------- probe
 
     /// <summary>Header and first dated line of a file, read without parsing the body.</summary>
-    private sealed record Probe(string Path, string Server, LogHeader Header, long FirstLineHash)
+    private sealed record Probe(string Path, string Server, LogHeader Header, long FirstLineHash, DateTime? FirstLocalTime)
     {
         public static Probe Read(string path, string? serverName)
         {
@@ -316,7 +386,8 @@ public sealed class Importer(CaseStore store)
             if (h.Index == 0 && string.IsNullOrEmpty(h.Computer))
                 throw new InvalidDataException("No DFSR log header found.");
             var server = !string.IsNullOrWhiteSpace(serverName) ? serverName : h.Computer;
-            return new Probe(path, server, h, Fnv1a64(reader.FirstDatedLine ?? ""));
+            DateTime? firstLocal = reader.FirstDatedLine is { } line && LineParser.TryParseDated(line, 0, out var ev) && ev is not null ? ev.LocalTime : null;
+            return new Probe(path, server, h, Fnv1a64(reader.FirstDatedLine ?? ""), firstLocal);
         }
     }
 

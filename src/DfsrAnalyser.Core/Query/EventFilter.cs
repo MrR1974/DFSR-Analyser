@@ -13,6 +13,8 @@ public sealed record EventFilter
     public bool ShowHidden { get; init; }
     /// <summary>Case-insensitive substring of the message.</summary>
     public string? MessageText { get; init; }
+    /// <summary>Wildcard file name filter (see <see cref="Query.FileNamePattern"/>); null or blank = no restriction.</summary>
+    public string? FileNamePattern { get; init; }
     public IReadOnlyDictionary<string, IReadOnlySet<string>> Include { get; init; } =
         new Dictionary<string, IReadOnlySet<string>>();
 
@@ -41,7 +43,7 @@ public sealed record EventFilter
     public EventFilter Without(string dimensionKey) =>
         Include.ContainsKey(dimensionKey) ? WithValues(dimensionKey, []) : this;
 
-    public EventFilter ClearAll() => this with { Include = new Dictionary<string, IReadOnlySet<string>>(), MessageText = null };
+    public EventFilter ClearAll() => this with { Include = new Dictionary<string, IReadOnlySet<string>>(), MessageText = null, FileNamePattern = null };
 
     private static readonly IReadOnlySet<string> EmptySet = new HashSet<string>();
 }

@@ -40,7 +40,7 @@ public sealed class LogFileReader : IDisposable
         Span<byte> magic = stackalloc byte[2];
         var n = fs.Read(magic);
         fs.Position = 0;
-        return n == 2 && magic[0] == 0x1F && magic[1] == 0x8B ? new GZipStream(fs, CompressionMode.Decompress) : fs;
+        return n == 2 && magic[0] == 0x1F && magic[1] == 0x8B ? new GzipLengthCheckStream(fs, path) : fs;
     }
 
     /// <summary>

@@ -87,7 +87,19 @@ public sealed partial class MainViewModel : ObservableObject
     [ObservableProperty] private bool _showHidden;
     [ObservableProperty] private bool _useLocalTime;
     [ObservableProperty] private string _messageText = "";
+    [ObservableProperty] private string _fileNamePatternText = "";
     [ObservableProperty] private string _timeRangeText = "";
+
+    // Typed time range (display zone). Re-filled from the effective range after every refresh.
+    [ObservableProperty] private DateTime? _fromDate;
+    [ObservableProperty] private string _fromTime = "";
+    [ObservableProperty] private DateTime? _toDate;
+    [ObservableProperty] private string _toTime = "";
+    [ObservableProperty] private string _rangeError = "";
+    [ObservableProperty] private string _caseSpanText = "";
+
+    /// <summary>First and last event of the whole case (hidden categories included), UTC.</summary>
+    private (DateTime Min, DateTime Max)? _caseExtent;
     [ObservableProperty] private string _bucketText = "";
     [ObservableProperty] private string _statusText = "Open or create a case to begin (File menu).";
     [ObservableProperty] private string _detailText = "";
@@ -124,6 +136,17 @@ public sealed partial class MainViewModel : ObservableObject
 
     partial void OnMessageTextChanged(string value) =>
         Filter = Filter with { MessageText = string.IsNullOrWhiteSpace(value) ? null : value.Trim() };
+
+    partial void OnFileNamePatternTextChanged(string value)
+    {
+        var pattern = FileNamePattern.Parse(value);
+        Filter = Filter with { FileNamePattern = pattern.IsEmpty ? null : pattern.ToString() };
+    }
+
+    partial void OnFromDateChanged(DateTime? value) => RangeError = "";
+    partial void OnFromTimeChanged(string value) => RangeError = "";
+    partial void OnToDateChanged(DateTime? value) => RangeError = "";
+    partial void OnToTimeChanged(string value) => RangeError = "";
 
     partial void OnSelectedRowChanged(TreeRowViewModel? value)
     {
@@ -213,7 +236,7 @@ public sealed partial class MainViewModel : ObservableObject
             Filter = "DFSR debug logs (Dfsr*.log;Dfsr*.log.gz)|Dfsr*.log;Dfsr*.log.gz|All files (*.*)|*.*",
             Multiselect = true,
         };
-        if (dlg.ShowDialog() == true) await ImportAsync(dlg.FileNames);
+        if (dlg.ShowDialog() == true) await ConfirmAndImportAsync(dlg.FileNames);
     }
 
     [RelayCommand]
@@ -221,7 +244,16 @@ public sealed partial class MainViewModel : ObservableObject
     {
         if (!await EnsureCaseAsync()) return;
         var dlg = new OpenFolderDialog { Title = "Import every Dfsr*.log / Dfsr*.log.gz under a folder (one sub-folder per server is fine)" };
-        if (dlg.ShowDialog() == true) await ImportAsync([dlg.FolderName]);
+        if (dlg.ShowDialog() == true) await ConfirmAndImportAsync([dlg.FolderName]);
+    }
+
+    /// <summary>Shows the Import dialog (server naming, preview) and imports if the analyst confirms.</summary>
+    private async Task ConfirmAndImportAsync(IReadOnlyList<string> paths)
+    {
+        if (_session is null) return;
+        var vm = new ImportViewModel(_session, paths);
+        if (new ImportWindow(vm) { Owner = Application.Current.MainWindow }.ShowDialog() == true)
+            await ImportAsync(paths, vm.Options);
     }
 
     private async Task<bool> EnsureCaseAsync()
@@ -232,9 +264,11 @@ public sealed partial class MainViewModel : ObservableObject
         return false;
     }
 
-    public async Task ImportAsync(IReadOnlyList<string> paths)
+    /// <param name="quiet">No message boxes (screenshot mode); the outcome still goes to the status bar and the import log.</param>
+    public async Task ImportAsync(IReadOnlyList<string> paths, ImportOptions? options = null, bool quiet = false)
     {
         if (_session is null) return;
+        options ??= new ImportOptions();
         _importCts = new CancellationTokenSource();
         var ct = _importCts.Token;
         IsBusy = true;
@@ -244,21 +278,25 @@ public sealed partial class MainViewModel : ObservableObject
         var sw = Stopwatch.StartNew();
         try
         {
-            var results = await _session.RunAsync((store, _) =>
-                new Importer(store).Import(Importer.FindLogFiles(paths), null, progress, ct), ct);
+            var job = await _session.RunAsync((store, _) => ImportJob.Run(store, paths, options, progress, ct), ct);
+            var results = job.Files;
+            LastImport = job;
 
-            var failed = results.Where(r => r.Outcome == FileOutcome.Failed).ToList();
-            StatusText = $"Imported {results.Sum(r => (long)r.Events):N0} events from {results.Count(r => r.Outcome is FileOutcome.Imported or FileOutcome.Resumed)} file(s) " +
-                         $"({results.Count(r => r.Outcome == FileOutcome.Unchanged)} unchanged) in {sw.Elapsed.TotalSeconds:N1} s.";
-            if (failed.Count > 0)
-                MessageBox.Show(string.Join("\n", failed.Select(f => $"{Path.GetFileName(f.Path)}: {f.Error}")),
-                    $"{failed.Count} file(s) could not be imported", MessageBoxButton.OK, MessageBoxImage.Warning);
-            if (results.Count == 0)
-                MessageBox.Show("No Dfsr*.log or Dfsr*.log.gz files were found.", "Import", MessageBoxButton.OK, MessageBoxImage.Information);
+            StatusText = $"Imported {job.Events:N0} events from {results.Count(r => r.Outcome is FileOutcome.Imported or FileOutcome.Resumed)} file(s) " +
+                         $"({results.Count(r => r.Outcome == FileOutcome.Unchanged)} unchanged, {job.FailedCount} failed) in {sw.Elapsed.TotalSeconds:N1} s." +
+                         (job.LogPath is null ? "" : $"  Log: {job.LogPath}");
+            if (!quiet)
+            {
+                if (results.Count == 0)
+                    MessageBox.Show("No Dfsr*.log or Dfsr*.log.gz files were found.", "Import", MessageBoxButton.OK, MessageBoxImage.Information);
+                else
+                    MessageBox.Show(ImportSummary(job), job.FailedCount > 0 ? $"Import finished: {job.FailedCount} file(s) failed" : "Import finished",
+                        MessageBoxButton.OK, job.FailedCount > 0 || job.Warnings.Count > 0 ? MessageBoxImage.Warning : MessageBoxImage.Information);
+            }
         }
         catch (OperationCanceledException)
         {
-            StatusText = "Import cancelled. Files already committed are kept; re-import resumes the rest.";
+            StatusText = "Import cancelled. Files already committed are kept; importing again resumes the rest.";
         }
         catch (Exception ex)
         {
@@ -270,6 +308,29 @@ public sealed partial class MainViewModel : ObservableObject
             _importCts = null;
         }
         await RefreshAsync();
+    }
+
+    /// <summary>The most recent import's outcome (screenshot mode reports it).</summary>
+    internal ImportJobResult? LastImport { get; private set; }
+
+    private static string ImportSummary(ImportJobResult job)
+    {
+        var sb = new StringBuilder();
+        foreach (var s in job.Servers) sb.AppendLine($"{s.Server}: {ImportJob.SummaryLine(s)}");
+        var failed = job.Files.Where(f => f.Outcome == FileOutcome.Failed).ToList();
+        if (failed.Count > 0)
+        {
+            sb.AppendLine().AppendLine("Failed:");
+            foreach (var f in failed.Take(15)) sb.AppendLine($"  {f.Path}: {f.Error}");
+            if (failed.Count > 15) sb.AppendLine($"  … and {failed.Count - 15} more (see the log)");
+        }
+        if (job.Warnings.Count > 0)
+        {
+            sb.AppendLine().AppendLine("Warnings:");
+            foreach (var w in job.Warnings.Take(10)) sb.AppendLine("  " + w);
+        }
+        if (job.LogPath is not null) sb.AppendLine().AppendLine("Details: " + job.LogPath);
+        return sb.ToString();
     }
 
     [RelayCommand]
@@ -392,7 +453,84 @@ public sealed partial class MainViewModel : ObservableObject
     private void ClearFilters()
     {
         MessageText = "";
+        FileNamePatternText = "";
         Filter = Filter.ClearAll();
+    }
+
+    [RelayCommand]
+    private void ClearFileNamePattern() => FileNamePatternText = "";
+
+    /// <summary>
+    /// Applies the typed From/To (display zone) as the time filter. Values outside the logs' span are pulled in
+    /// to it; From must be before To. Goes through the zoom history like a chart selection.
+    /// </summary>
+    [RelayCommand]
+    private void ApplyTimeRange()
+    {
+        if (_caseExtent is not { } extent) return;
+        if (!TryReadTime(FromDate, FromTime, out var from) || !TryReadTime(ToDate, ToTime, out var to))
+        {
+            RangeError = "Enter a date and a time (HH:mm, HH:mm:ss or HH:mm:ss.fff) for both From and To.";
+            return;
+        }
+        var (min, max) = SpanBounds(extent);
+        if (to <= from)
+        {
+            RangeError = "From must be earlier than To.";
+            return;
+        }
+        if (to <= min || from >= max)
+        {
+            RangeError = $"That range is outside the logs ({TimeDisplay.Full(min)[..19]} – {TimeDisplay.Full(max)[..19]} {TimeDisplay.ZoneLabel}).";
+            return;
+        }
+        RangeError = "";
+        from = from < min ? min : from;
+        to = to > max ? max : to;
+        if (from == Filter.FromUtc && to == Filter.ToUtc) return;
+        SetTimeRange(from, to);
+    }
+
+    /// <summary>The last <paramref name="minutes"/> of the logs (relative to the latest event, not to now).</summary>
+    [RelayCommand]
+    private void LastOfLogs(string minutes)
+    {
+        if (_caseExtent is not { } extent) return;
+        var (min, max) = SpanBounds(extent);
+        var from = max - TimeSpan.FromMinutes(double.Parse(minutes, System.Globalization.CultureInfo.InvariantCulture));
+        RangeError = "";
+        SetTimeRange(from < min ? min : from, max);
+    }
+
+    /// <summary>The case span widened to whole seconds, so From/To round-trip through HH:mm:ss and include every event.</summary>
+    private static (DateTime Min, DateTime Max) SpanBounds((DateTime Min, DateTime Max) extent) =>
+        (FloorSecond(extent.Min), FloorSecond(extent.Max).AddSeconds(1));
+
+    private static DateTime FloorSecond(DateTime t) => new(t.Ticks - t.Ticks % TimeSpan.TicksPerSecond, t.Kind);
+
+    private static bool TryReadTime(DateTime? date, string time, out DateTime utc)
+    {
+        utc = default;
+        if (date is not { } d) return false;
+        var text = string.IsNullOrWhiteSpace(time) ? "00:00" : time.Trim();
+        if (!TimeSpan.TryParseExact(text, [@"h\:mm", @"h\:mm\:ss", @"h\:mm\:ss\.FFF", @"hh\:mm", @"hh\:mm\:ss", @"hh\:mm\:ss\.FFF"],
+                System.Globalization.CultureInfo.InvariantCulture, out var tod) || tod >= TimeSpan.FromDays(1))
+            return false;
+        utc = DateTime.SpecifyKind(TimeDisplay.FromDisplay(d.Date + tod), DateTimeKind.Utc);
+        return true;
+    }
+
+    /// <summary>Shows the effective range in the From/To fields (display zone; milliseconds only when present).</summary>
+    private void ShowRangeFields(DateTime fromUtc, DateTime toUtc)
+    {
+        static string Clock(DateTime t) => t.ToString(t.Millisecond == 0 ? "HH:mm:ss" : "HH:mm:ss.fff", System.Globalization.CultureInfo.InvariantCulture);
+        var from = TimeDisplay.ToDisplay(fromUtc);
+        var to = TimeDisplay.ToDisplay(toUtc);
+        FromDate = from.Date;
+        FromTime = Clock(from);
+        ToDate = to.Date;
+        ToTime = Clock(to);
+        RangeError = "";
     }
 
     /// <summary>Restricts the view to a time range (from the chart). Remembers the previous range for Zoom out.</summary>
@@ -448,6 +586,7 @@ public sealed partial class MainViewModel : ObservableObject
         {
             var r = await _session.RunAsync((_, q) =>
             {
+                var caseExtent = q.Extent(new EventFilter { ShowHidden = true });
                 var extent = q.Extent(f);
                 var from = f.FromUtc ?? extent?.Min ?? DateTime.UtcNow;
                 var to = f.ToUtc ?? extent?.Max ?? from;
@@ -456,9 +595,23 @@ public sealed partial class MainViewModel : ObservableObject
                 var series = q.Series(f, bucket, stack, topN: 8);
                 var total = q.CountEvents(f);
                 var groups = levels.Count > 0 ? q.Groups(f, [], levels[0], bucket) : [];
-                return (extent, from, to, bucket, series, total, groups);
+                return (extent, from, to, bucket, series, total, groups, caseExtent);
             });
             if (version != _version) return;
+
+            _caseExtent = r.caseExtent;
+            if (r.caseExtent is { } ce)
+            {
+                var (min, max) = SpanBounds(ce);
+                CaseSpanText = $"logs span {TimeDisplay.Full(ce.Min)[..19]} – {TimeDisplay.Full(ce.Max)[..19]} ({TimeDisplay.Span(ce.Max - ce.Min)})";
+                ShowRangeFields(f.FromUtc ?? min, f.ToUtc ?? max);
+            }
+            else
+            {
+                CaseSpanText = "no events in the case";
+                FromDate = ToDate = null;
+                FromTime = ToTime = "";
+            }
 
             _bucket = r.bucket;
             _rangeMinutes = Math.Max((r.to - r.from).TotalMinutes, 1.0 / 60);
@@ -466,7 +619,8 @@ public sealed partial class MainViewModel : ObservableObject
                 ? "No events"
                 : $"{TimeDisplay.Full(r.from)}  →  {TimeDisplay.Full(r.to)}  {TimeDisplay.ZoneLabel}  ({TimeDisplay.Span(r.to - r.from)})";
             BucketText = $"window {TimeDisplay.Span(r.bucket)}";
-            StatusText = $"{r.total:N0} events in view" + (f.ShowHidden ? " (including hidden categories)" : "") + $"  ·  {_session.Folder}";
+            StatusText = $"{r.total:N0} events in view" + (f.ShowHidden ? " (including hidden categories)" : "") +
+                         (f.FileNamePattern is { } fp ? $"  ·  file name {fp}" : "") + $"  ·  {_session.Folder}";
 
             foreach (var s in r.series.Series) Palette.HexFor(s.Key);
             Series = r.series;

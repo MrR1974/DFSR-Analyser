@@ -15,15 +15,19 @@ public sealed class CollectionLog : IDisposable
     public string? Path { get; }
     public event Action<string>? Line;
 
-    public CollectionLog(string? folder)
+    /// <param name="folder">Folder for the log (usually <c>&lt;case&gt;\logs</c>); null = no file, events only.</param>
+    /// <param name="kind">File name prefix and description: "collect" (collection) or "import".</param>
+    public CollectionLog(string? folder, string kind = "collect")
     {
         if (folder is null) return;
         Directory.CreateDirectory(folder);
-        Path = System.IO.Path.Combine(folder, $"collect-{DateTime.Now:yyyyMMdd-HHmmss}.log");
+        var stamp = $"{kind}-{DateTime.Now:yyyyMMdd-HHmmss}";
+        Path = System.IO.Path.Combine(folder, stamp + ".log");
+        for (var n = 2; File.Exists(Path); n++) Path = System.IO.Path.Combine(folder, $"{stamp}-{n}.log");
         // Shared for reading so the log can be opened in an editor while a collection runs.
         var fs = new FileStream(Path, FileMode.Create, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
         _writer = new StreamWriter(fs) { AutoFlush = true };
-        Info("DFSR Analyser collection log. Times are local to this machine; UTC offset " +
+        Info($"DFSR Analyser {(kind == "collect" ? "collection" : kind)} log. Times are local to this machine; UTC offset " +
              TimeZoneInfo.Local.GetUtcOffset(DateTime.Now).ToString(@"hh\:mm", CultureInfo.InvariantCulture) + ".");
         Info($"Machine {Environment.MachineName}, user {Environment.UserDomainName}\\{Environment.UserName}, OS {Environment.OSVersion}.");
     }

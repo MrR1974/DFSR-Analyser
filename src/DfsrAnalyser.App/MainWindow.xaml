@@ -60,13 +60,47 @@
             </Menu>
 
             <!-- ================= Toolbar ================= -->
-            <Border DockPanel.Dock="Top" BorderBrush="{StaticResource Border}" BorderThickness="0,1,0,1" Background="{StaticResource PaneBackground}" Padding="8,5">
+            <Border DockPanel.Dock="Top" BorderBrush="{StaticResource Border}" BorderThickness="0,1,0,0" Background="{StaticResource PaneBackground}" Padding="8,5,8,2">
+                <WrapPanel IsEnabled="{Binding IsCaseOpen}">
+                    <WrapPanel.Resources>
+                        <Style TargetType="DatePicker">
+                            <Setter Property="Width" Value="112" />
+                            <Setter Property="VerticalAlignment" Value="Center" />
+                        </Style>
+                        <Style x:Key="TimeBox" TargetType="TextBox">
+                            <Setter Property="Width" Value="86" />
+                            <Setter Property="Margin" Value="4,0,0,0" />
+                            <Setter Property="VerticalAlignment" Value="Center" />
+                            <Setter Property="VerticalContentAlignment" Value="Center" />
+                            <Setter Property="ToolTip" Value="HH:mm, HH:mm:ss or HH:mm:ss.fff — press Enter to apply" />
+                        </Style>
+                    </WrapPanel.Resources>
+                    <WrapPanel.InputBindings>
+                        <KeyBinding Key="Enter" Command="{Binding ApplyTimeRangeCommand}" />
+                    </WrapPanel.InputBindings>
+                    <TextBlock Text="From" Style="{StaticResource ToolLabel}" Margin="0,0,4,0" />
+                    <DatePicker SelectedDate="{Binding FromDate}" />
+                    <TextBox Style="{StaticResource TimeBox}" Text="{Binding FromTime, UpdateSourceTrigger=PropertyChanged}" />
+                    <TextBlock Text="To" Style="{StaticResource ToolLabel}" />
+                    <DatePicker SelectedDate="{Binding ToDate}" />
+                    <TextBox Style="{StaticResource TimeBox}" Text="{Binding ToTime, UpdateSourceTrigger=PropertyChanged}" />
+                    <Button Content="Apply" Margin="8,0,0,0" Padding="12,1" VerticalAlignment="Center" Command="{Binding ApplyTimeRangeCommand}"
+                            ToolTip="Filter to this range (From inclusive, To exclusive), in the display time zone" />
+                    <TextBlock Text="Last of the logs:" Style="{StaticResource ToolLabel}" Margin="14,0,4,0" />
+                    <Button Content="15 min" VerticalAlignment="Center" Style="{StaticResource LinkButton}" Command="{Binding LastOfLogsCommand}" CommandParameter="15" />
+                    <Button Content="1 h" Margin="8,0,0,0" VerticalAlignment="Center" Style="{StaticResource LinkButton}" Command="{Binding LastOfLogsCommand}" CommandParameter="60" />
+                    <Button Content="24 h" Margin="8,0,0,0" VerticalAlignment="Center" Style="{StaticResource LinkButton}" Command="{Binding LastOfLogsCommand}" CommandParameter="1440" />
+                    <Button Content="Zoom out" Margin="14,0,0,0" VerticalAlignment="Center" Style="{StaticResource LinkButton}"
+                            Command="{Binding ZoomOutCommand}" IsEnabled="{Binding CanZoomOut}" ToolTip="Back to the previous time range (Alt+Backspace, or right-click the chart)" />
+                    <Button Content="All time" Margin="10,0,0,0" VerticalAlignment="Center" Style="{StaticResource LinkButton}"
+                            Command="{Binding ResetTimeCommand}" IsEnabled="{Binding HasTimeFilter}" />
+                    <TextBlock Text="{Binding CaseSpanText}" Style="{StaticResource ToolLabel}" Margin="14,0,0,0" />
+                    <TextBlock Text="{Binding RangeError}" Foreground="{StaticResource ErrorText}" VerticalAlignment="Center" Margin="10,0,0,0" />
+                </WrapPanel>
+            </Border>
+            <Border DockPanel.Dock="Top" BorderBrush="{StaticResource Border}" BorderThickness="0,0,0,1" Background="{StaticResource PaneBackground}" Padding="8,2,8,5">
                 <DockPanel LastChildFill="False">
                     <TextBlock DockPanel.Dock="Left" Text="{Binding TimeRangeText}" VerticalAlignment="Center" FontWeight="SemiBold" />
-                    <Button DockPanel.Dock="Left" Content="Zoom out" Margin="12,0,0,0" VerticalAlignment="Center" Style="{StaticResource LinkButton}"
-                            Command="{Binding ZoomOutCommand}" IsEnabled="{Binding CanZoomOut}" ToolTip="Back to the previous time range (Alt+Backspace, or right-click the chart)" />
-                    <Button DockPanel.Dock="Left" Content="All time" Margin="10,0,0,0" VerticalAlignment="Center" Style="{StaticResource LinkButton}"
-                            Command="{Binding ResetTimeCommand}" IsEnabled="{Binding HasTimeFilter}" />
 
                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                         <TextBlock Text="Window" Style="{StaticResource ToolLabel}" />
@@ -100,6 +134,26 @@
 
                 <!-- Facet pane -->
                 <Border Grid.Column="0" Background="{StaticResource PaneBackground}" BorderBrush="{StaticResource Border}" BorderThickness="0,0,1,0">
+                    <DockPanel>
+                    <StackPanel DockPanel.Dock="Top" Margin="8,8,8,4">
+                        <TextBlock Text="File name" Style="{StaticResource PaneHeader}" />
+                        <DockPanel>
+                            <Button DockPanel.Dock="Right" Content="✕" Width="22" Margin="3,0,0,0" Padding="0" ToolTip="Clear the file name filter"
+                                    Command="{Binding ClearFileNamePatternCommand}" />
+                            <TextBox x:Name="FileNameBox" Text="{Binding FileNamePatternText, UpdateSourceTrigger=PropertyChanged, Delay=400}" VerticalContentAlignment="Center"
+                                     IsEnabled="{Binding IsCaseOpen}">
+                                <TextBox.ToolTip>
+                                    <TextBlock>
+                                        Filters every view to events whose file name matches.<LineBreak />
+                                        * any characters, ? one character; case doesn't matter.<LineBreak />
+                                        Without wildcards the whole name must match (report.docx).<LineBreak />
+                                        ; separates alternatives, ! excludes:  *.docx;*.xlsx;!~$*
+                                    </TextBlock>
+                                </TextBox.ToolTip>
+                            </TextBox>
+                        </DockPanel>
+                        <TextBlock Text="e.g.  file_00*.txt   *.docx;!~$*" Foreground="{StaticResource Muted}" FontSize="11" Margin="0,2,0,0" />
+                    </StackPanel>
                     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                         <ItemsControl ItemsSource="{Binding Facets}" Margin="6">
                             <ItemsControl.ItemTemplate>
@@ -124,7 +178,7 @@
                                         </Expander.Header>
                                         <StackPanel Margin="18,2,0,0">
                                             <TextBox Text="{Binding Search, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,3"
-                                                     Visibility="{Binding Searchable, Converter={StaticResource BoolToVis}}" ToolTip="Search values" />
+                                                     Visibility="{Binding Searchable, Converter={StaticResource BoolToVis}}" ToolTip="Search values: text, or wildcards (* ? ; !) as in the File name box" />
                                             <ItemsControl ItemsSource="{Binding Values}">
                                                 <ItemsControl.ItemTemplate>
                                                     <DataTemplate DataType="{x:Type vm:FacetValueViewModel}">
@@ -143,6 +197,7 @@
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
                     </ScrollViewer>
+                    </DockPanel>
                 </Border>
 
                 <GridSplitter Grid.Column="1" HorizontalAlignment="Stretch" Background="Transparent" />

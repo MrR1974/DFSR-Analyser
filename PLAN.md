@@ -105,7 +105,7 @@ src/
   DfsrAnalyser.Core          parsing, categorisation, name resolution, case DB access (no UI)
   DfsrAnalyser.Collection    Windows-only: LDAP discovery, WNet credentials, remote event log (net10.0-windows)
   DfsrAnalyser.App           WPF app (`DfsrAnalyser.exe`): MVVM, ScottPlot chart, tree grid
-  DfsrAnalyser.Cli           `dfsra` console harness: import / stats / files / bench
+  DfsrAnalyser.Cli           `dfsra` console harness: import / stats / verify / compare / files / bench
 tools/Publish-Lab.ps1        self-contained app + CLI zip for an isolated lab VM
 docs/Lab-Test-Checklist.md   manual remote-collection tests with expected results
 tests/
@@ -350,35 +350,15 @@ Phase 6 is split so that the filters, which Top-N, file trace and export all dep
 
 Top-N, file trace and CSV export as described in §7, all honouring the new file name and time range filters.
 
-### Import test proposal
+### As built (6a, 2026-11-12)
 
-Live collection has been verified; import has only been checked locally by the CLI against the samples (phase 1). The tests below prove manual ingestion in the app, and that it gives the same case as collection. Pass criteria throughout: `dfsra verify` reports no defects, and `dfsra compare` shows identical event and category counts for shared files.
-
-**Local (Claude, before handing over)**
-
-- Automated: import the sample tree through the importer as the app calls it, in order, reversed (later Indexes first, so roll orphans wait and are stitched afterwards) and shuffled. All three give identical event ids and counts.
-- `compare` the sample import against the lab-collected cases (`samples/Cases/Lab1`, `Lab2`) for the files they share.
-- App self-check: `--import` + `--screenshot` with the new dialog options, and screenshots of the file name filter and time range fields.
-
-**Lab (manual, new checklist section E in `docs/Lab-Test-Checklist.md`)**
-
-| # | Test | Expected |
-|---|---|---|
-| E1 | Copy `C:\Windows\debug\Dfsr*.log*` from each server into `<share>\<server>\` (include the active log) | — |
-| E2 | App: new case → Import folder → server name from sub-folder | One server per folder; file list and spans shown before import; per-server summary; `import-*.log` written |
-| E3 | Same folder into a second case with `dfsra import --per-folder` | `compare` with E2: identical |
-| E4 | Collect the same servers live into a third case over the same span | `compare` with E2: identical for shared files |
-| E5 | Re-import the E2 folder | Every file *unchanged*; no new events |
-| E6 | Later, copy again (active log grown, maybe rolled to `.gz`) and import | Active log *resumed*; `.gz` recognised as the same Index; no duplicates (`verify`) |
-| E7 | Import into the collected case (E4) | Shared files skipped; only new files added |
-| E8 | Import files individually, newest Index first, then the rest | Same counts as E2 (orphans stitched) |
-| E9 | Server name: import one server's logs with header name and with a different fixed name | Header mismatch warning; events filed under the chosen name |
-| E10 | Bad input: a non-DFSR `.log`, a truncated `.gz`, an empty file, a file locked by another process | Each listed as failed with a reason; the others import |
-| E11 | Cancel mid-import, then import again | Completes; `verify` clean, counts equal E2 |
-| E12 | `.evtx` import for both servers (also covers DC01's event log while C8 is blocked) | Records on the timeline under *Event log* |
-| E13 | Filters on the imported case: file name `file_00*.txt`, `*.txt;!file_1*`, and a typed time range inside the span | Counts match `dfsra stats --file … --from … --to …` |
-
-The user pastes back the `import-*.log`, `verify` and `compare` output for review, as in the collection rounds.
+- **File name filter**: `Core/Query/FileNamePattern` (parse, `*`/`?` to an escaped `ILIKE … ESCAPE '\'`, includes OR-ed, excludes keep events without a file name) and `EventFilter.FileNamePattern`, applied in `CaseQuery.WhereClause`, so facets, chart, grid, events and the CLI all honour it. Facet search boxes switch to the same matching when the text has `*`, `?`, `;` or a leading `!`. App: *File name* box at the top of the facet pane (400 ms debounce, ✕ to clear, syntax in the tooltip, shown in the status bar, cleared by *Clear filters*).
+- **Time range entry**: a toolbar row with From/To (`DatePicker` + time box accepting `HH:mm`, `HH:mm:ss`, `HH:mm:ss.fff`), *Apply* or Enter, *Last of the logs: 15 min · 1 h · 24 h* (from the latest event), *Zoom out*, *All time*, the case's span, and an inline error (From ≥ To, or entirely outside the logs). Values outside the span are pulled in; the span is widened to whole seconds so the fields round-trip. Every refresh re-fills the fields from the active range in the display zone, so chart drags and the UTC/local toggle show up there; typed ranges go through the zoom history.
+- **Import**: `Importer.Preview` (header, first event converted with the file's TzId, last write, size, *new / will resume / already in case / unreadable*; writes nothing), per-file server names (`ImportItem`), and `ImportJob` (naming *header / sub-folder / one name*, warnings for header-name mismatches (NetBIOS vs FQDN tolerated), several computers under one name and repeated Indexes, `<case>\logs\import-*.log`, per-server summary). `CollectionLog` now takes a kind, so import logs share its format. App: *Import files/folder* opens the Import dialog (naming, drop Plumbing detail, per-server summary, warnings, file grid) and ends with a summary box. CLI `import` runs through `ImportJob` too.
+- **Found while testing and fixed**: a truncated `.gz` (interrupted copy) decompressed "successfully" up to the cut and was imported as a complete, shorter log. `GzipLengthCheckStream` now checks the gzip trailer's length at end of file and fails the file (*truncated or damaged … Copy it again*). The same log twice in one import (two folders, or `.log` and `.log.gz`) was planned twice; it is now imported once (prefer `.gz`, then the larger copy, then the plainer name) and the others are reported as `Duplicate`.
+- **Integrity**: `Core/Storage/CaseIntegrity`. `Verify`: duplicate event ids or file registrations, event ids not matching file/line, events without a file or in another server's file, stored vs actual event counts, orphan or repeated detail rows, earlier files still marked growing, uncategorised events (defects); waiting roll fragments, missing Indexes, events over a second outside their file's span, e.g. after a clock change (warnings). `Compare` attaches the other case read-only, matches files by server name, Index and first-line hash, and compares order-independent hashes of event fields, categories and nested detail over the lines both copies hold (`Identical`, `SamePrefix` for an active log copied at another time, `Differs`, `OnlyInA/B`). CLI: `verify`, `compare`, and `stats --from/--to [--utc] --file` (category × server for that view, via `CaseQuery.Matrix`).
+- **Verified locally**: 103 tests (28 new: pattern translation and filtering, facet wildcards, naming, preview, warnings, bad files incl. truncation and duplicates, import order, verify findings, compare prefix/differences). On the samples: CLI import, app import (`--import … --import-naming folder --screenshot`) and an import of every file one at a time **newest first** (so DC01's two split rolls wait and are stitched later) all give 442,170 events, `verify` OK, and `compare` *Identical* for all 10 files. **Compared with the lab-collected cases `samples/Cases/Lab1` and `Lab2`, all 10 shared files are identical event for event** (fields, categories, nested detail); the later files and the event log exist only in the lab cases. Filtered counts agree between app and CLI (e.g. `file_1*` in the typed middle third of the logs = 8 events, the 13:00:27 RDC add). The E10 bad-input set behaves as described in the checklist. The published lab zip runs.
+- **Lab tests**: section E of `docs/Lab-Test-Checklist.md` (E1–E13): app and CLI import compared with each other and with live collection, re-import, top-up by import, import into a collected case, newest-first import, fixed server name, bad input, cancel, `.evtx` import (covers DC01's event log while C8 is blocked), and the filters against `dfsra stats`.
 
 ---
 
@@ -392,7 +372,7 @@ The user pastes back the `import-*.log`, `verify` and `compare` output for revie
 | 3 ✅ | Main UI | Case open/create, upload, facet pane, chart, aggregate grid, lazy drill-down, event detail |
 | 4 ✅ | Name resolution | Config-dump parsing, DB GUID inference, origin/partner/RG/RF dimensions |
 | 5 ✅ (lab-verified except DC event log) | Remote collection | AD discovery (incl. SYSVOL/DCs), SMB copy, time-range selection, alternate credentials, collection profiles and top-up, optional event-log collection and `.evtx` upload |
-| 6 | Filtering, import verification, analysis extras | 6a: wildcard file name filter, time range entry, import dialog and diagnostics, `dfsra verify`/`compare`, import test round (§7a). 6b: Top-N, file trace, CSV export |
+| 6 | Filtering, import verification, analysis extras | **6a built 2026-11-12** (lab round pending, checklist section E): wildcard file name filter, time range entry, import dialog and diagnostics, `dfsra verify`/`compare` (§7a). 6b: Top-N, file trace, CSV export |
 | 7 | Packaging | Self-contained per-user installer, app icon, README |
 
 ---

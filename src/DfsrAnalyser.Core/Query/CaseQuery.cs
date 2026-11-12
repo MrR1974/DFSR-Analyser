@@ -64,6 +64,7 @@ public sealed class CaseQuery(CaseStore store)
         if (f.ToUtc is { } to) { parts.Add("e.ts_utc < ?"); args.Add(to); }
         if (!f.ShowHidden) parts.Add("NOT coalesce(c.hidden, FALSE)");
         if (!string.IsNullOrWhiteSpace(f.MessageText)) { parts.Add("contains(lower(e.message), lower(?))"); args.Add(f.MessageText); }
+        if (FileNamePattern.Parse(f.FileNamePattern).ToSql("e.file_name", args) is { } fileSql) parts.Add(fileSql);
         foreach (var (key, values) in f.Include)
         {
             if (values.Count == 0) continue;
@@ -130,8 +131,14 @@ public sealed class CaseQuery(CaseStore store)
         var sb = new StringBuilder($"SELECT {dim.Sql} AS v, count(*) AS n {from} {where}");
         if (!string.IsNullOrWhiteSpace(search))
         {
-            sb.Append(where.Length == 0 ? " WHERE " : " AND ").Append($"contains(lower({dim.Sql}), lower(?))");
-            args.Add(search);
+            sb.Append(where.Length == 0 ? " WHERE " : " AND ");
+            if (FileNamePattern.HasWildcard(search) || search.Contains(';') || search.TrimStart().StartsWith('!'))
+                sb.Append(FileNamePattern.Parse(search).ToSql(dim.Sql, args) ?? "TRUE");
+            else
+            {
+                sb.Append($"contains(lower({dim.Sql}), lower(?))");
+                args.Add(search);
+            }
         }
         sb.Append(" GROUP BY v ORDER BY n DESC, v LIMIT ").Append(limit.ToString(CultureInfo.InvariantCulture));
 
@@ -252,6 +259,17 @@ public sealed class CaseQuery(CaseStore store)
             var p = peaks.TryGetValue(x.V, out var found) ? found : (N: x.N, At: x.First);
             return new GroupRow(x.V, x.N, x.First, x.Last, p.N, p.At, trends[x.V]);
         }).ToList();
+    }
+
+    /// <summary>Counts by two dimensions under the filter (e.g. category × server), for reports and checks.</summary>
+    public List<(string Row, string Column, long Count)> Matrix(EventFilter f, Dimension rows, Dimension columns)
+    {
+        var (from, where, args) = WhereClause(f, null, rows, columns);
+        var list = new List<(string, string, long)>();
+        using var cmd = store.Command($"SELECT {rows.Sql} AS row_key, {columns.Sql} AS col_key, count(*) {from} {where} GROUP BY row_key, col_key ORDER BY row_key, col_key", [.. args]);
+        using var r = cmd.ExecuteReader();
+        while (r.Read()) list.Add((r.GetString(0), r.GetString(1), Convert.ToInt64(r.GetValue(2))));
+        return list;
     }
 
     // ------------------------------------------------------------------ events

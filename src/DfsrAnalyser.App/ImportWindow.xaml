@@ -1,0 +1,82 @@
+<Window x:Class="DfsrAnalyser.App.ImportWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Import DFSR debug logs" Width="1100" Height="680" MinWidth="760" MinHeight="460"
+        WindowStartupLocation="CenterOwner" Background="White">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" TextTrimming="CharacterEllipsis" Margin="0,0,0,8">
+            <Run Text="From " Foreground="{StaticResource Muted}" /><Run Text="{Binding PathsText, Mode=OneWay}" FontWeight="SemiBold" />
+        </TextBlock>
+
+        <GroupBox Grid.Row="1" Header="Server names" Padding="6">
+            <StackPanel>
+                <RadioButton GroupName="naming" IsChecked="{Binding UseHeaderNames}" Margin="0,1"
+                             Content="From each log's header (Computer: name) — right unless a server was renamed" />
+                <RadioButton GroupName="naming" IsChecked="{Binding UseFolderNames}" Margin="0,1"
+                             Content="From the sub-folder each log is in (…\&lt;server&gt;\Dfsr00001.log)" />
+                <StackPanel Orientation="Horizontal" Margin="0,1">
+                    <RadioButton GroupName="naming" IsChecked="{Binding UseFixedName}" Content="One name for every file:" VerticalAlignment="Center" />
+                    <TextBox Width="220" Margin="8,0,0,0" Text="{Binding FixedName, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding UseFixedName}" />
+                </StackPanel>
+                <CheckBox Margin="0,8,0,0" IsChecked="{Binding DropPlumbingDetail}"
+                          Content="Don't keep nested detail for Plumbing events (about 15% smaller case; their counts are kept)" />
+            </StackPanel>
+        </GroupBox>
+
+        <StackPanel Grid.Row="2" Margin="0,8,0,4">
+            <TextBlock Text="{Binding SummaryText}" FontWeight="SemiBold" />
+            <ItemsControl ItemsSource="{Binding ServerSummaries}" Margin="0,2,0,0">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate><TextBlock Text="{Binding}" Foreground="#374151" /></DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+            <ItemsControl ItemsSource="{Binding Warnings}" Margin="0,4,0,0">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate><TextBlock Text="{Binding StringFormat=⚠ {0}}" Foreground="#B54708" TextWrapping="Wrap" /></DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </StackPanel>
+
+        <DataGrid Grid.Row="3" ItemsSource="{Binding Rows}" AutoGenerateColumns="False" IsReadOnly="True" HeadersVisibility="Column"
+                  GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="#ECEEF1" CanUserAddRows="False" SelectionUnit="FullRow">
+            <DataGrid.RowStyle>
+                <Style TargetType="DataGridRow">
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsProblem}" Value="True">
+                            <Setter Property="Foreground" Value="{StaticResource ErrorText}" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </DataGrid.RowStyle>
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Server" Binding="{Binding Server}" Width="130" />
+                <DataGridTextColumn Header="File" Binding="{Binding File}" Width="140" />
+                <DataGridTextColumn Header="Index" Binding="{Binding Index}" Width="50" />
+                <DataGridTextColumn Header="Seq" Binding="{Binding Sequence}" Width="40" />
+                <DataGridTextColumn Header="Header computer" Binding="{Binding Computer}" Width="120" />
+                <DataGridTextColumn Header="First event" Binding="{Binding FirstEvent}" Width="135" />
+                <DataGridTextColumn Header="Last written" Binding="{Binding LastWritten}" Width="135" />
+                <DataGridTextColumn Header="Size" Binding="{Binding Size}" Width="70" />
+                <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="150" />
+                <DataGridTextColumn Header="Folder" Binding="{Binding Folder}" Width="*" />
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <TextBlock Grid.Row="4" Margin="0,6,0,0" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
+                   Text="Times are shown in the display zone (View menu). Files already in the case are skipped; a growing active log resumes where the last import stopped. Each import writes a log to the case's logs folder." />
+
+        <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+            <Button Content="Import" Padding="20,3" IsDefault="True" IsEnabled="{Binding CanImport}" Click="OnImport" />
+            <Button Content="Cancel" Padding="16,3" Margin="8,0,0,0" IsCancel="True" />
+        </StackPanel>
+    </Grid>
+</Window>

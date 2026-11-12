@@ -136,6 +136,9 @@ public sealed class CaseStore : IDisposable
 
     // ---------- servers ----------
 
+    /// <summary>The server's id, or null when the case has no server of that name (case-insensitive).</summary>
+    public int? FindServerId(string name) => Scalar<int?>("SELECT server_id FROM server WHERE lower(name) = lower(?)", name);
+
     public int GetOrAddServer(string name)
     {
         var existing = Scalar<int?>("SELECT server_id FROM server WHERE lower(name) = lower(?)", name);

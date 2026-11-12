@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using DfsrAnalyser.Core.Import;
 using DfsrAnalyser.Core.Storage;
 
@@ -15,9 +16,20 @@ internal static class Program
               --server               file every log under this server name (default: header Computer name)
               --per-folder           each immediate sub-folder is one server, named after the folder
               --drop-plumbing-detail do not store nested detail of Plumbing-category events
-          dfsra stats --case <folder> [--all]
+              Each run writes <case>\logs\import-*.log.
+          dfsra stats --case <folder> [--all] [--from <time>] [--to <time>] [--utc] [--file <pattern>]
               Print per-server totals, category counts (--all includes hidden categories),
               signature counts, field coverage and top methods.
+              With --from/--to/--file, print category x server counts for that view only, as the app shows it:
+              --from / --to   "yyyy-MM-dd HH:mm[:ss]", local time (--utc: UTC); --from inclusive, --to exclusive
+              --file          file name wildcards: * and ?, ';' between alternatives, '!' to exclude,
+                              e.g. "file_00*.txt"  or  "*.txt;!file_1*"
+          dfsra verify --case <folder>
+              Check the case for duplicate events or files, miscounted files, missing Indexes and waiting
+              roll fragments. Exit code 1 when a defect is found.
+          dfsra compare --case <a> --case <b>
+              Compare two cases file by file (server, Index, first line): events, categories and detail over
+              the lines both hold. Exit code 1 when any shared file differs.
           dfsra rules --case <folder> apply [<rules.json>]
               Re-categorise the case with its rules.json, or with the given file (which becomes the case's rules).
           dfsra names --case <folder>
@@ -45,7 +57,9 @@ internal static class Program
         var cmd = args[0];
         if (CollectCommands.Handles(cmd)) return CollectCommands.Run(args);
 
-        string? casePath = null, server = null;
+        string? casePath = null, server = null, from = null, to = null, filePattern = null;
+        var cases = new List<string>();
+        var utc = false;
         var perFolder = false;
         var dropPlumbing = false;
         var all = false;
@@ -54,7 +68,11 @@ internal static class Program
         {
             switch (args[i])
             {
-                case "--case": casePath = args[++i]; break;
+                case "--case": casePath ??= args[i + 1]; cases.Add(args[++i]); break;
+                case "--from": from = args[++i]; break;
+                case "--to": to = args[++i]; break;
+                case "--utc": utc = true; break;
+                case "--file": filePattern = args[++i]; break;
                 case "--server": server = args[++i]; break;
                 case "--per-folder": perFolder = true; break;
                 case "--drop-plumbing-detail": dropPlumbing = true; break;
@@ -75,7 +93,11 @@ internal static class Program
             return cmd switch
             {
                 "import" => RunImport(casePath!, server, perFolder, dropPlumbing, inputs),
-                "stats" => RunStats(casePath!, all),
+                "stats" => from is null && to is null && filePattern is null
+                    ? RunStats(casePath!, all)
+                    : RunFilteredStats(casePath!, all, ParseTime(from, utc), ParseTime(to, utc), filePattern),
+                "verify" => RunVerify(casePath!),
+                "compare" => cases.Count == 2 ? RunCompare(cases[0], cases[1]) : Fail("compare needs two --case options."),
                 "rules" => RunRules(casePath, inputs),
                 "names" => RunNames(casePath!),
                 "files" => RunFiles(casePath!),
@@ -84,7 +106,7 @@ internal static class Program
                 _ => Fail($"Unknown command '{cmd}'."),
             };
         }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException or Core.Taxonomy.RuleSetException)
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or ArgumentException or FormatException or Core.Taxonomy.RuleSetException)
         {
             Console.Error.WriteLine(ex.Message);
             return 1;
@@ -102,35 +124,28 @@ internal static class Program
         if (inputs.Count == 0) return Fail("No input files or folders given.");
 
         using var store = CaseStore.Open(casePath);
-        var importer = new Importer(store) { DropPlumbingDetail = dropPlumbing };
         var sw = Stopwatch.StartNew();
-        var results = new List<FileImportResult>();
-
-        if (perFolder)
-        {
-            foreach (var root in inputs)
-                foreach (var dir in Directory.EnumerateDirectories(root).Order(StringComparer.OrdinalIgnoreCase))
-                {
-                    var files = Importer.FindLogFiles([dir]);
-                    if (files.Count > 0) results.AddRange(importer.Import(files, Path.GetFileName(dir), ConsoleProgress()));
-                }
-        }
-        else
-        {
-            results.AddRange(importer.Import(Importer.FindLogFiles(inputs), server, ConsoleProgress()));
-        }
+        var options = new ImportOptions(
+            perFolder ? ServerNaming.FolderName : server is not null ? ServerNaming.Fixed : ServerNaming.Header, server, dropPlumbing);
+        // --per-folder: each immediate sub-folder of an input is one server, named after the folder.
+        var job = ImportJob.Run(store, inputs, options, ConsoleProgress());
+        foreach (var w in job.Warnings) Console.Error.WriteLine("WARNING: " + w);
+        var results = job.Files;
         sw.Stop();
         Console.Error.WriteLine();
 
         Console.WriteLine($"{"Server",-16} {"Idx",4} {"Seq",4} {"Outcome",-10} {"Events",9} {"Lines",9} {"Secs",7} {"Parse",6} {"Commit",6} {"Load",6}  File");
         foreach (var r in results)
-            Console.WriteLine($"{r.Server,-16} {r.Index,4} {r.Sequence,4} {r.Outcome,-10} {r.Events,9:N0} {r.Lines,9:N0} {r.Elapsed.TotalSeconds,7:F2} {r.ParseTime.TotalSeconds,6:F2} {r.CommitTime.TotalSeconds,6:F2} {r.LoadTime.TotalSeconds,6:F2}  {Path.GetFileName(r.Path)}{(r.Error is null ? "" : "  ERROR: " + r.Error)}");
+            Console.WriteLine($"{r.Server,-16} {r.Index,4} {r.Sequence,4} {r.Outcome,-10} {r.Events,9:N0} {r.Lines,9:N0} {r.Elapsed.TotalSeconds,7:F2} {r.ParseTime.TotalSeconds,6:F2} {r.CommitTime.TotalSeconds,6:F2} {r.LoadTime.TotalSeconds,6:F2}  {Path.GetFileName(r.Path)}{(r.Error is null ? "" : (r.Outcome == FileOutcome.Failed ? "  ERROR: " : "  NOTE: ") + r.Error)}");
 
         var lines = results.Sum(r => (long)r.Lines);
         var events = results.Sum(r => (long)r.Events);
         Console.WriteLine();
         Console.WriteLine($"Imported {events:N0} events from {lines:N0} lines in {sw.Elapsed.TotalSeconds:F1}s " +
                           $"({(sw.Elapsed.TotalSeconds > 0 ? lines / sw.Elapsed.TotalSeconds : 0):N0} lines/s).");
+        Console.WriteLine();
+        foreach (var srv in job.Servers) Console.WriteLine($"{srv.Server,-16} {ImportJob.SummaryLine(srv)}");
+        if (job.LogPath is not null) Console.WriteLine($"Import log: {job.LogPath}");
         store.Dispose();
         Console.WriteLine($"Case database: {new FileInfo(Path.Combine(casePath, CaseStore.DatabaseFileName)).Length / 1048576.0:N1} MB");
         return results.Any(r => r.Outcome == FileOutcome.Failed) ? 1 : 0;
@@ -160,6 +175,71 @@ internal static class Program
         foreach (var r in stats.TopClassMethods(25))
             Console.WriteLine($"  {r.Count,9:N0}  {r.Key}");
         return 0;
+    }
+
+    /// <summary>Local time by default (as typed in the app with local display), UTC with --utc.</summary>
+    internal static DateTime? ParseTime(string? text, bool utc)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return null;
+        string[] formats = ["yyyy-MM-dd HH:mm", "yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd HH:mm:ss.fff", "yyyy-MM-dd"];
+        var style = utc ? DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal : DateTimeStyles.AssumeLocal | DateTimeStyles.AdjustToUniversal;
+        if (!DateTime.TryParseExact(text.Trim(), formats, CultureInfo.InvariantCulture, style, out var t) &&
+            !DateTime.TryParse(text, CultureInfo.CurrentCulture, style, out t))
+            throw new FormatException($"Cannot read the time '{text}'. Use \"yyyy-MM-dd HH:mm[:ss]\".");
+        return DateTime.SpecifyKind(t, DateTimeKind.Utc);
+    }
+
+    private static int RunFilteredStats(string casePath, bool includeHidden, DateTime? fromUtc, DateTime? toUtc, string? pattern)
+    {
+        using var store = CaseStore.Open(casePath);
+        var q = new Core.Query.CaseQuery(store);
+        var filter = new Core.Query.EventFilter { FromUtc = fromUtc, ToUtc = toUtc, ShowHidden = includeHidden, FileNamePattern = pattern };
+        var span = q.Extent(new Core.Query.EventFilter { ShowHidden = true });
+        Console.WriteLine($"Case span (UTC): {(span is { } sp ? $"{sp.Min:yyyy-MM-dd HH:mm:ss.fff} - {sp.Max:yyyy-MM-dd HH:mm:ss.fff}" : "no events")}");
+        Console.WriteLine($"Filter: from {fromUtc?.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture) ?? "start"} UTC (incl.)" +
+                          $" to {toUtc?.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture) ?? "end"} UTC (excl.)" +
+                          $", file name {(string.IsNullOrWhiteSpace(pattern) ? "any" : $"'{Core.Query.FileNamePattern.Parse(pattern)}'")}" +
+                          $", {(includeHidden ? "all categories" : "visible categories")}");
+        Console.WriteLine($"Events in view: {q.CountEvents(filter):N0}");
+
+        var rows = q.Matrix(filter, Core.Query.Dimensions.Category, Core.Query.Dimensions.Server);
+        var servers = rows.Select(r => r.Column).Distinct().Order(StringComparer.OrdinalIgnoreCase).ToList();
+        Console.WriteLine($"\n  {"Category",-46}" + string.Concat(servers.Select(x => $"{x,14}")));
+        foreach (var g in rows.GroupBy(r => r.Row))
+            Console.WriteLine($"  {g.Key,-46}" + string.Concat(servers.Select(x => $"{g.Where(r => r.Column == x).Sum(r => r.Count),14:N0}")));
+        Console.WriteLine($"  {"Total",-46}" + string.Concat(servers.Select(x => $"{rows.Where(r => r.Column == x).Sum(r => r.Count),14:N0}")));
+        return 0;
+    }
+
+    private static int RunVerify(string casePath)
+    {
+        using var store = CaseStore.Open(casePath);
+        var findings = CaseIntegrity.Verify(store);
+        foreach (var f in findings)
+            Console.WriteLine($"{f.Level switch { FindingLevel.Defect => "DEFECT ", FindingLevel.Warning => "WARNING", _ => "INFO   " }} {f.Message}");
+        var defects = findings.Count(f => f.Level == FindingLevel.Defect);
+        Console.WriteLine(defects == 0 ? "Result: OK" : $"Result: {defects} defect(s)");
+        return defects == 0 ? 0 : 1;
+    }
+
+    private static int RunCompare(string caseA, string caseB)
+    {
+        using var store = CaseStore.Open(caseA);
+        var rows = CaseIntegrity.Compare(store, caseB);
+        Console.WriteLine($"A = {Path.GetFullPath(caseA)}\nB = {Path.GetFullPath(caseB)}\n");
+        Console.WriteLine($"{"Server",-16} {"Idx",4} {"Events A",10} {"Events B",10} {"Compared",10}  {"Result",-11} File / note");
+        foreach (var r in rows)
+            Console.WriteLine($"{r.Server,-16} {r.Index,4} {r.EventsA?.ToString("N0", CultureInfo.CurrentCulture) ?? "-",10} {r.EventsB?.ToString("N0", CultureInfo.CurrentCulture) ?? "-",10} " +
+                              $"{(r.Match is FileMatch.OnlyInA or FileMatch.OnlyInB ? "-" : r.CommonEvents.ToString("N0", CultureInfo.CurrentCulture)),10}  {r.Match,-11} " +
+                              $"{r.FileA ?? r.FileB}{(r.Note is null ? "" : "  (" + r.Note + ")")}");
+        var shared = rows.Where(r => r.Match is not (FileMatch.OnlyInA or FileMatch.OnlyInB)).ToList();
+        var differ = shared.Count(r => r.Match == FileMatch.Differs);
+        Console.WriteLine($"\n{shared.Count} shared file(s): {shared.Count(r => r.Match == FileMatch.Identical)} identical, " +
+                          $"{shared.Count(r => r.Match == FileMatch.SamePrefix)} identical over the common lines, {differ} different; " +
+                          $"{rows.Count(r => r.Match == FileMatch.OnlyInA)} only in A, {rows.Count(r => r.Match == FileMatch.OnlyInB)} only in B.");
+        Console.WriteLine($"Events in shared files, over the common lines: {shared.Sum(r => r.CommonEvents):N0}");
+        Console.WriteLine(differ == 0 ? "Result: OK" : "Result: DIFFERENT");
+        return differ == 0 ? 0 : 1;
     }
 
     private static void PrintCategories(List<CaseStats.CategoryCount> rows, bool includeHidden)

@@ -14,6 +14,12 @@ public partial class App : Application
     /// <summary>File or folder to import into the start-up case (--import), through the same path as the menu.</summary>
     public static string? StartupImport { get; private set; }
 
+    /// <summary>Server naming for --import: "header" (default), "folder", or a fixed server name (--import-naming).</summary>
+    public static string ImportNaming { get; private set; } = "header";
+
+    /// <summary>File name pattern applied for the screenshot mode's filters image (--screenshot-file).</summary>
+    public static string ScreenshotFilePattern { get; private set; } = "file_00*.txt";
+
     protected override void OnStartup(StartupEventArgs e)
     {
         for (var i = 0; i < e.Args.Length; i++)
@@ -23,6 +29,8 @@ public partial class App : Application
                 case "--case" when i + 1 < e.Args.Length: StartupCase = e.Args[++i]; break;
                 case "--screenshot" when i + 1 < e.Args.Length: ScreenshotPath = e.Args[++i]; break;
                 case "--import" when i + 1 < e.Args.Length: StartupImport = e.Args[++i]; break;
+                case "--import-naming" when i + 1 < e.Args.Length: ImportNaming = e.Args[++i]; break;
+                case "--screenshot-file" when i + 1 < e.Args.Length: ScreenshotFilePattern = e.Args[++i]; break;
                 default:
                     if (!e.Args[i].StartsWith("--", StringComparison.Ordinal) && Directory.Exists(e.Args[i])) StartupCase = e.Args[i];
                     break;
