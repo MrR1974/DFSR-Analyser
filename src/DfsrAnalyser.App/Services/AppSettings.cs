@@ -8,7 +8,7 @@ public sealed class AppSettings
     public List<string> RecentCases { get; set; } = [];
     public bool UseLocalTime { get; set; }
 
-    private static string FilePath =>
+    public static string FilePath =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DfsrAnalyser", "settings.json");
 
     public static AppSettings Load()

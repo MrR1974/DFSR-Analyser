@@ -6,6 +6,9 @@
     <LangVersion>latest</LangVersion>
     <Authors>Mark Renoden</Authors>
     <Product>DFSR Analyser</Product>
-    <Version>0.1.0</Version>
+    <Version>1.0.0</Version>
+    <Company>Mark Renoden</Company>
+    <Copyright>Copyright (c) 2026 Mark Renoden</Copyright>
+    <Description>Imports or collects DFSR debug logs and charts event rates over time.</Description>
   </PropertyGroup>
 </Project>

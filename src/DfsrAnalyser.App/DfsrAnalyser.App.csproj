@@ -10,6 +10,7 @@
     <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
     <!-- ScottPlot.WPF depends on SkiaSharp.Views.WPF, which only declares .NET Framework targets but runs on .NET. -->
     <NoWarn>$(NoWarn);NU1701</NoWarn>
+    <ApplicationIcon>DfsrAnalyser.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>

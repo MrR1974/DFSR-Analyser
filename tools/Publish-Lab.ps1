@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     Publishes both executables for win-x64 as self-contained (no .NET install needed on the VM) into one
-    folder, adds the manual test checklist, and zips it. Copy the zip into the VM, extract, and run
+    folder, adds the README and the manual test checklist, and zips it. Copy the zip into the VM, extract, and run
     DfsrAnalyser.exe or dfsra.exe from that folder.
 
 .PARAMETER Output
@@ -29,7 +29,7 @@ foreach ($project in 'src\DfsrAnalyser.App\DfsrAnalyser.App.csproj', 'src\DfsrAn
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed for $project" }
 }
 
-Copy-Item (Join-Path $root 'docs\Lab-Test-Checklist.md') $bin
+Copy-Item (Join-Path $root 'docs\Lab-Test-Checklist.md'), (Join-Path $root 'README.md') $bin
 $zip = Join-Path $Output 'DfsrAnalyser-lab.zip'
 Compress-Archive -Path $bin -DestinationPath $zip
 $size = (Get-Item $zip).Length / 1MB

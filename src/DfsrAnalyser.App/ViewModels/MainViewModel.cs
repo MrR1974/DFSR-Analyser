@@ -432,11 +432,48 @@ public sealed partial class MainViewModel : ObservableObject
     private void EditRules()
     {
         if (_session is null) return;
-        try { Process.Start(new ProcessStartInfo(_session.Store.RulesPath) { UseShellExecute = true }); }
+        OpenText(_session.Store.RulesPath);
+    }
+
+    /// <summary>Opens a text file with its associated app, or Notepad when there is none.</summary>
+    private static void OpenText(string path)
+    {
+        try { Process.Start(new ProcessStartInfo(path) { UseShellExecute = true }); }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
         {
-            Process.Start(new ProcessStartInfo("notepad.exe", $"\"{_session.Store.RulesPath}\""));
+            Process.Start(new ProcessStartInfo("notepad.exe", $"\"{path}\""));
         }
+    }
+
+    // ------------------------------------------------------------------ help
+
+    /// <summary>The README shipped next to the executable (installed and lab copies have one).</summary>
+    private static string ReadmePath => Path.Combine(AppContext.BaseDirectory, "README.md");
+
+    public bool HasReadme => File.Exists(ReadmePath);
+
+    [RelayCommand]
+    private void OpenReadme()
+    {
+        if (HasReadme) OpenText(ReadmePath);
+    }
+
+    [RelayCommand]
+    private static void About()
+    {
+        var asm = typeof(MainViewModel).Assembly;
+        var version = asm.GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+            .OfType<System.Reflection.AssemblyInformationalVersionAttribute>().FirstOrDefault()?.InformationalVersion ?? "?";
+        var plus = version.IndexOf('+');
+        if (plus > 0) version = version[..plus];   // drop the source revision the SDK appends
+        MessageBox.Show(
+            $"DFSR Analyser {version}\n\n" +
+            "Imports or collects DFSR debug logs into a case and charts event rates over time.\n\n" +
+            $"Program folder: {AppContext.BaseDirectory}\n" +
+            $"Settings: {AppSettings.FilePath}\n" +
+            $".NET {Environment.Version}\n\n" +
+            "The command-line harness is dfsra.exe in the program folder (run it without arguments for help).",
+            "About DFSR Analyser", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
     [RelayCommand]

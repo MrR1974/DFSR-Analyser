@@ -8,6 +8,7 @@
     <!-- Parallel parsing allocates heavily; server GC keeps workers from stalling each other. -->
     <ServerGarbageCollection>true</ServerGarbageCollection>
     <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    <ApplicationIcon>..\DfsrAnalyser.App\DfsrAnalyser.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>

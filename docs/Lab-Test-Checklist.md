@@ -1,7 +1,7 @@
 # DFSR Analyser — lab tests
 
 Manual tests for phase 5 (AD discovery, log collection over the admin share, alternate credentials, top-up,
-DFS Replication event log), phase 6a (manual import, section E) and phase 6b (Top-N, file trace, CSV export, section F). Run them inside the lab; the developer
+DFS Replication event log), phase 6a (manual import, section E), phase 6b (Top-N, file trace, CSV export, section F) and phase 7 (installer, section G). Run them inside the lab; the developer
 cannot reach it.
 
 **Every collection command writes a diagnostic log** to `<case>\logs\collect-*.log` (the CLI prints the path;
@@ -121,6 +121,19 @@ create `trace-test.txt`, then edit it, wait a minute, and delete it. Then collec
 | F8 | Start *Export ▸ Events in view* on the whole case and press *Cancel* | Stops; no partial file is left behind |
 | F9 | `.\dfsra.exe export --case C:\Cases\imp-app --what grid --levels category,server --out grid.csv` | Rows sum to the event count for the same filters (`stats`) |
 | F10 | Open a case imported or collected **before** this build (e.g. `imp-collect` from round E), then `compare` it with a fresh import of the same logs | `Result: OK`. File names that ran on into `fileSize(approx):…` (DC01 at severity 5) are repaired on open |
+
+## G. Installer — phase 7
+
+Build on the build machine with `pwsh tools\New-Installer.ps1` → `artifacts\DfsrAnalyser-<version>.msi`. Copy the MSI into a lab VM and sign in as an ordinary domain user (not an administrator) for G1 to G4.
+
+| # | Action | Expected |
+|---|---|---|
+| G1 | Double-click the MSI | Installs with a progress bar only: no UAC prompt and no questions. SmartScreen may warn because the file is unsigned (*More info › Run anyway*) |
+| G2 | Start menu › *DFSR Analyser* | The app opens with the blue chart icon in the title bar and taskbar. *Help › About* shows the version and `%LOCALAPPDATA%\Programs\DFSR Analyser\`. *Help › Read me* opens the README |
+| G3 | Open a **new** console and run `dfsra` | Prints help. The program folder is on the user PATH, so it runs from any folder |
+| G4 | Open a case from section E, check that facets, Top-N and trace work, then close the app | Same as before the install. The case folder is untouched apart from normal use |
+| G5 | Build a higher version (`New-Installer.ps1 -Version 1.0.1`) and install it over the first | Upgrades in place: one entry in *Installed apps*, *About* shows 1.0.1, recent cases are kept |
+| G6 | *Settings › Apps › Installed apps › DFSR Analyser › Uninstall* | Program folder, Start menu shortcut and PATH entry are gone. Cases and `%LOCALAPPDATA%\DfsrAnalyser\settings.json` remain |
 
 ## Known behaviours to confirm (not failures)
 

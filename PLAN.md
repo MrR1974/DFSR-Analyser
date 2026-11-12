@@ -106,8 +106,12 @@ src/
   DfsrAnalyser.Collection    Windows-only: LDAP discovery, WNet credentials, remote event log (net10.0-windows)
   DfsrAnalyser.App           WPF app (`DfsrAnalyser.exe`): MVVM, ScottPlot chart, tree grid
   DfsrAnalyser.Cli           `dfsra` console harness: import / stats / top / trace / export / verify / compare / files / bench
-tools/Publish-Lab.ps1        self-contained app + CLI zip for an isolated lab VM
-docs/Lab-Test-Checklist.md   manual remote-collection tests with expected results
+installer/DfsrAnalyser.wxs   WiX 5 per-user MSI (payload harvested from the publish folder)
+tools/New-Installer.ps1      publish app + CLI self-contained → artifacts\DfsrAnalyser-<ver>.msi and .zip
+tools/New-Icon.ps1           draws src/DfsrAnalyser.App/DfsrAnalyser.ico (committed; re-run only to change it)
+tools/Publish-Lab.ps1        self-contained app + CLI zip for an isolated lab VM (adds README and checklist)
+docs/Lab-Test-Checklist.md   manual lab tests with expected results
+README.md                    user guide: install, quick start, collection, CLI, build
 tests/
   DfsrAnalyser.Tests         xUnit v3: parser, extractor, importer tests on lab log fragments
 src/DfsrAnalyser.Core/Taxonomy/default-rules.json   embedded default taxonomy (copied to each case as rules.json)
@@ -411,6 +415,31 @@ Top-N, file trace and CSV export as described in §7, all honouring the new file
   - A trace takes about 0.75 s, Top-N about 0.9 s, and exporting all 442k events takes 3.3 s (148 MB).
   - After the repair, `compare` with the lab-collected `Lab1` is *Identical* for all 10 shared files.
 
+## 7b. Packaging — built in phase 7 (2026-11-12)
+
+- **Version 1.0.0** in `Directory.Build.props`, with Company, Copyright and Description. `New-Installer.ps1 -Version` overrides it for one build.
+- **Icon:** a blue rounded tile with rising bars (event rates) under opposed arrows (replication). `tools/New-Icon.ps1` draws each size separately: 16 to 256 px, PNG frames. Below 32 px it leaves out the arrows and snaps the bars to pixels. Used as the ApplicationIcon of both executables, so WPF windows, the taskbar and the shortcut all pick it up.
+- **Help menu:** *Read me* opens `README.md` from the program folder (shipped by the MSI, the zip and the lab zip; disabled when it is missing). *About* shows the version, program folder, settings file and .NET version.
+- **MSI** (WiX 5, `installer/DfsrAnalyser.wxs`):
+  - Per-user (`Scope="perUser"`), x64, no UI beyond progress. No administrator rights are needed.
+  - Program files go to `%LOCALAPPDATA%\Programs\DFSR Analyser`. The app and CLI are published self-contained into one folder (433 files).
+  - The payload is harvested with `<Files Include="…\**">`, so new dependencies need no installer edit.
+  - It adds a Start menu shortcut and appends the program folder to the user PATH. The PATH entry is removed on uninstall.
+  - The ARP icon is set, and repair is off.
+  - `MajorUpgrade` replaces older versions and refuses downgrades.
+  - Cases and `%LOCALAPPDATA%\DfsrAnalyser\settings.json` are left on uninstall.
+  - The MSI is not signed, so SmartScreen warns on download. Signing is a later decision, if this is distributed beyond the author.
+- **Outputs:** `artifacts\DfsrAnalyser-1.0.0.msi` (64 MB) and the same files as a portable `.zip` (83 MB).
+- **README.md:** what it does, install and uninstall, quick start through each view, remote collection requirements (admin share, SMB, event-log firewall), rules, CLI summary with examples, building from source and repo layout.
+- **Verified locally (this machine, as the signed-in user):**
+  - A silent install gives exit 0, 433 files, the shortcut, the user PATH entry and HKCU keys, and file version 1.0.0.0 with product version `1.0.0+<commit>`.
+  - The installed `dfsra` imported the samples (371,469 + 70,701 events, as before). The installed app's screenshot mode rendered every view, its exports matched, and the trace of `file_0005.txt` is unchanged.
+  - The exe icons extract correctly.
+  - Upgrading 1.0.0 → 1.0.1 ran RemoveExistingProducts and left one copy, one PATH entry and version 1.0.1.0.
+  - Uninstall removes the folder, shortcut, PATH entry and registry key. The shared `Programs` folder stays.
+  - 135 tests pass.
+- **Lab:** checklist section G covers the install as an ordinary domain user, the PATH in a new console, upgrade and uninstall.
+
 ---
 
 ## 8. Phases
@@ -424,7 +453,7 @@ Top-N, file trace and CSV export as described in §7, all honouring the new file
 | 4 ✅ | Name resolution | Config-dump parsing, DB GUID inference, origin/partner/RG/RF dimensions |
 | 5 ✅ (lab-verified except DC event log) | Remote collection | AD discovery (incl. SYSVOL/DCs), SMB copy, time-range selection, alternate credentials, collection profiles and top-up, optional event-log collection and `.evtx` upload |
 | 6 | Filtering, import verification, analysis extras | **6a built 2026-11-12** (lab round pending, checklist section E): wildcard file name filter, time range entry, import dialog and diagnostics, `dfsra verify`/`compare` (§7a). **6b built 2026-11-12** (checklist section F): Top-N, file trace with replication latency, CSV export (§7a) |
-| 7 | Packaging | Self-contained per-user installer, app icon, README |
+| 7 | Packaging | Self-contained per-user installer, app icon, README. **Built 2026-11-12** (§7b; lab checklist section G): 1.0.0 MSI and portable zip, install/upgrade/uninstall verified locally |
 
 ---
 

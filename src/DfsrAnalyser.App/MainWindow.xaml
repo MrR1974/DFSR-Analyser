@@ -63,6 +63,11 @@
                     <MenuItem Header="_Top-N list…" Command="{Binding ExportTopNCommand}" />
                     <MenuItem Header="File t_race…" Command="{Binding ExportTraceCommand}" />
                 </MenuItem>
+                <MenuItem Header="_Help">
+                    <MenuItem Header="_Read me" Command="{Binding OpenReadmeCommand}" IsEnabled="{Binding HasReadme}" />
+                    <Separator />
+                    <MenuItem Header="_About DFSR Analyser" Command="{Binding AboutCommand}" />
+                </MenuItem>
             </Menu>
 
             <!-- ================= Toolbar ================= -->
