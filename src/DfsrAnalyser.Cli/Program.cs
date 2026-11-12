@@ -8,7 +8,7 @@ namespace DfsrAnalyser.Cli;
 internal static class Program
 {
     private const string Usage = """
-        dfsra — DFSR Analyser console harness
+        dfsra — DFSR Analyser command line
 
         Usage:
           dfsra import --case <folder> [--server <name>] [--per-folder] [--drop-plumbing-detail] <file-or-folder>...
@@ -58,7 +58,7 @@ internal static class Program
               Time each import stage (decompress+read, parse, extract) without writing a case.
 
         Remote collection (dfsra discover / test / collect / topup / import-evtx):
-        """ + CollectCommands.Usage;
+        """ + "\r\n" + CollectCommands.Usage;
 
     private static int Main(string[] args)
     {

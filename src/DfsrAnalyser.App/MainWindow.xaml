@@ -11,6 +11,7 @@
         <KeyBinding Key="O" Modifiers="Control" Command="{Binding OpenCaseCommand}" />
         <KeyBinding Key="I" Modifiers="Control" Command="{Binding ImportFilesCommand}" />
         <KeyBinding Key="Back" Modifiers="Alt" Command="{Binding ZoomOutCommand}" />
+        <KeyBinding Key="F1" Command="{Binding OpenUserGuideCommand}" />
     </Window.InputBindings>
 
     <Grid>
@@ -64,6 +65,7 @@
                     <MenuItem Header="File t_race…" Command="{Binding ExportTraceCommand}" />
                 </MenuItem>
                 <MenuItem Header="_Help">
+                    <MenuItem Header="_User guide" Command="{Binding OpenUserGuideCommand}" IsEnabled="{Binding HasUserGuide}" InputGestureText="F1" />
                     <MenuItem Header="_Read me" Command="{Binding OpenReadmeCommand}" IsEnabled="{Binding HasReadme}" />
                     <Separator />
                     <MenuItem Header="_About DFSR Analyser" Command="{Binding AboutCommand}" />

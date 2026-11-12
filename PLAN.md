@@ -105,13 +105,15 @@ src/
   DfsrAnalyser.Core          parsing, categorisation, name resolution, case DB access (no UI)
   DfsrAnalyser.Collection    Windows-only: LDAP discovery, WNet credentials, remote event log (net10.0-windows)
   DfsrAnalyser.App           WPF app (`DfsrAnalyser.exe`): MVVM, ScottPlot chart, tree grid
-  DfsrAnalyser.Cli           `dfsra` console harness: import / stats / top / trace / export / verify / compare / files / bench
-installer/DfsrAnalyser.wxs   WiX 5 per-user MSI (payload harvested from the publish folder)
-tools/New-Installer.ps1      publish app + CLI self-contained → artifacts\DfsrAnalyser-<ver>.msi and .zip
+  DfsrAnalyser.Cli           `dfsra` command line: import / stats / top / trace / export / verify / compare / files / bench
+install.ps1                  one-line installer: latest GitHub release, SHA-256 check, hands over to Install-DfsrAnalyser.ps1
+tools/New-Package.ps1        publish app + CLI self-contained → artifacts\DfsrAnalyser-<ver>.zip and .zip.sha256 (the release)
+tools/Install-DfsrAnalyser.ps1, Uninstall-DfsrAnalyser.ps1, "Install DFSR Analyser.cmd"   per-user install from the zip
 tools/New-Icon.ps1           draws src/DfsrAnalyser.App/DfsrAnalyser.ico (committed; re-run only to change it)
-tools/Publish-Lab.ps1        self-contained app + CLI zip for an isolated lab VM (adds README and checklist)
+docs/User-Guide.md           how to use it (shipped next to the exe; Help › User guide, F1)
 docs/Lab-Test-Checklist.md   manual lab tests with expected results
-README.md                    user guide: install, quick start, collection, CLI, build
+README.md                    overview: install, quick start, collection, CLI, build
+LICENSE, NOTICE.md           MIT; third-party components and their licences
 tests/
   DfsrAnalyser.Tests         xUnit v3: parser, extractor, importer tests on lab log fragments
 src/DfsrAnalyser.Core/Taxonomy/default-rules.json   embedded default taxonomy (copied to each case as rules.json)
@@ -417,28 +419,23 @@ Top-N, file trace and CSV export as described in §7, all honouring the new file
 
 ## 7b. Packaging — built in phase 7 (2026-11-12)
 
-- **Version 1.0.0** in `Directory.Build.props`, with Company, Copyright and Description. `New-Installer.ps1 -Version` overrides it for one build.
+- **Version 1.0.0** in `Directory.Build.props`, with Company, Copyright and Description. `New-Package.ps1 -Version` overrides it for one build.
 - **Icon:** a blue rounded tile with rising bars (event rates) under opposed arrows (replication). `tools/New-Icon.ps1` draws each size separately: 16 to 256 px, PNG frames. Below 32 px it leaves out the arrows and snaps the bars to pixels. Used as the ApplicationIcon of both executables, so WPF windows, the taskbar and the shortcut all pick it up.
-- **Help menu:** *Read me* opens `README.md` from the program folder (shipped by the MSI, the zip and the lab zip; disabled when it is missing). *About* shows the version, program folder, settings file and .NET version.
-- **MSI** (WiX 5, `installer/DfsrAnalyser.wxs`):
-  - Per-user (`Scope="perUser"`), x64, no UI beyond progress. No administrator rights are needed.
-  - Program files go to `%LOCALAPPDATA%\Programs\DFSR Analyser`. The app and CLI are published self-contained into one folder (433 files).
-  - The payload is harvested with `<Files Include="…\**">`, so new dependencies need no installer edit.
-  - It adds a Start menu shortcut and appends the program folder to the user PATH. The PATH entry is removed on uninstall.
-  - The ARP icon is set, and repair is off.
-  - `MajorUpgrade` replaces older versions and refuses downgrades.
-  - Cases and `%LOCALAPPDATA%\DfsrAnalyser\settings.json` are left on uninstall.
-  - The MSI is not signed, so SmartScreen warns on download. Signing is a later decision, if this is distributed beyond the author.
-- **Outputs:** `artifacts\DfsrAnalyser-1.0.0.msi` (64 MB) and the same files as a portable `.zip` (83 MB).
-- **README.md:** what it does, install and uninstall, quick start through each view, remote collection requirements (admin share, SMB, event-log firewall), rules, CLI summary with examples, building from source and repo layout.
-- **Verified locally (this machine, as the signed-in user):**
-  - A silent install gives exit 0, 433 files, the shortcut, the user PATH entry and HKCU keys, and file version 1.0.0.0 with product version `1.0.0+<commit>`.
-  - The installed `dfsra` imported the samples (371,469 + 70,701 events, as before). The installed app's screenshot mode rendered every view, its exports matched, and the trace of `file_0005.txt` is unchanged.
-  - The exe icons extract correctly.
-  - Upgrading 1.0.0 → 1.0.1 ran RemoveExistingProducts and left one copy, one PATH entry and version 1.0.1.0.
-  - Uninstall removes the folder, shortcut, PATH entry and registry key. The shared `Programs` folder stays.
-  - 135 tests pass.
-- **Lab:** checklist section G covers the install as an ordinary domain user, the PATH in a new console, upgrade and uninstall.
+- **Help menu:** *User guide* (F1, added in §7c) and *Read me* open `User-Guide.md` and `README.md` from the program folder (shipped in the release zip's `app\`; each is disabled when its file is missing). *About* shows the version, program folder, settings file and .NET version.
+- **The 1.0.0 MSI (WiX 5) is retired** (2026-11-13), along with `installer/`, `New-Installer.ps1` and `Publish-Lab.ps1`. An unsigned MSI gets a SmartScreen warning on every release, and code signing isn't wanted. Distribution now follows AlignPro and ADTD for PowerPoint (§7c).
+- **Verified locally in phase 7 (MSI, for the record):** silent install, upgrade 1.0.0 → 1.0.1 and uninstall all clean; 135 tests passed.
+
+## 7c. Public distribution — 2026-11-13
+
+- **Public repo** `MrR1974/DFSR-Analyser`, published from the private workspace as a **git subtree split** of `Apps/DFSRAnalyser` (remote `dfsr-public`, never fetches tags). The procedure is in the workspace README, *Publishing DFSR Analyser*.
+- **Release** = GitHub release `v<version>` carrying `DfsrAnalyser-<version>.zip` and `.zip.sha256`, built by `tools/New-Package.ps1`:
+  - `app\`: both executables self-contained in one folder, plus `README.md`, `User-Guide.md` (Help menu) and `licenses\` (licence texts of every shipped NuGet package, from the NuGet cache; the build fails if the Apache-2.0, DuckDB or GLFW texts are missing);
+  - `Install-DfsrAnalyser.ps1`, `Uninstall-DfsrAnalyser.ps1`, `Install DFSR Analyser.cmd`, `README.txt`, `LICENSE`, `NOTICE.md`.
+  - It refuses to package case or log data (`.duckdb`, `.log`, `.gz`, `.evtx`, `.csv`).
+- **Installer** (`Install-DfsrAnalyser.ps1`, adapted from ADTD's): per-user to `%LOCALAPPDATA%\Programs\DFSR Analyser` (the MSI's folder); Start menu shortcut; user PATH by default (`-NoPath` to skip), because `dfsra` is half the tool; *Installed apps* entry (HKCU `Uninstall\DfsrAnalyser`) whose uninstall runs `Uninstall-DfsrAnalyser.ps1 -FromArp`. It removes an MSI install of DFSR Analyser first (`msiexec /x {ProductCode} /qn`), so the two never share the folder. When run by the one-liner as a script block it throws instead of exiting, as AlignPro's does.
+- **One-liner** `install.ps1` (adapted from AlignPro's): `irm https://raw.githubusercontent.com/MrR1974/DFSR-Analyser/main/install.ps1 | iex`. It finds the latest release (or `$env:DFSRA_VERSION`), downloads the zip and checksum by exact name, verifies SHA-256, extracts with `System32\tar.exe` and runs the installer from its text. `$env:DFSRA_PATH` and `$env:DFSRA_NO_PATH` pass through.
+- **User guide** `docs/User-Guide.md`: getting logs worth analysing (`Set-DfsrServiceConfiguration`), cases, import, collection, every view, categories and rules, exports, typical investigations, CLI recipes, troubleshooting. *Help › User guide* (F1) opens it from the program folder.
+- **Licence:** MIT, as AlignPro and ADTD. `NOTICE.md` lists the third-party components (all MIT except Apache Arrow, Apache-2.0, and GLFW, zlib).
 
 ---
 
@@ -453,7 +450,7 @@ Top-N, file trace and CSV export as described in §7, all honouring the new file
 | 4 ✅ | Name resolution | Config-dump parsing, DB GUID inference, origin/partner/RG/RF dimensions |
 | 5 ✅ (lab-verified except DC event log) | Remote collection | AD discovery (incl. SYSVOL/DCs), SMB copy, time-range selection, alternate credentials, collection profiles and top-up, optional event-log collection and `.evtx` upload |
 | 6 | Filtering, import verification, analysis extras | **6a built 2026-11-12** (lab round pending, checklist section E): wildcard file name filter, time range entry, import dialog and diagnostics, `dfsra verify`/`compare` (§7a). **6b built 2026-11-12** (checklist section F): Top-N, file trace with replication latency, CSV export (§7a) |
-| 7 | Packaging | Self-contained per-user installer, app icon, README. **Built 2026-11-12** (§7b; lab checklist section G): 1.0.0 MSI and portable zip, install/upgrade/uninstall verified locally |
+| 7 ✅ | Packaging and distribution | Self-contained per-user install, app icon, README. **Built 2026-11-12** as a 1.0.0 MSI (§7b); **replaced 2026-11-13** by a release zip, install scripts and a one-line installer, published as `MrR1974/DFSR-Analyser` under MIT with a user guide (§7c; lab checklist section G) |
 
 ---
 

@@ -1,7 +1,7 @@
 # DFSR Analyser — lab tests
 
 Manual tests for phase 5 (AD discovery, log collection over the admin share, alternate credentials, top-up,
-DFS Replication event log), phase 6a (manual import, section E), phase 6b (Top-N, file trace, CSV export, section F) and phase 7 (installer, section G). Run them inside the lab; the developer
+DFS Replication event log), phase 6a (manual import, section E), phase 6b (Top-N, file trace, CSV export, section F) and packaging (zip installer, section G). Run them inside the lab; the developer
 cannot reach it.
 
 **Every collection command writes a diagnostic log** to `<case>\logs\collect-*.log` (the CLI prints the path;
@@ -10,10 +10,11 @@ send that log file. It contains no passwords.
 
 ## Setup
 
-1. On the build machine: `pwsh tools\Publish-Lab.ps1` → `artifacts\lab\DfsrAnalyser-lab.zip`.
-2. Copy the zip into a lab VM that is **joined to the lab domain** (a member server or a third VM; running on a
-   DFSR member also works). Extract it, e.g. to `C:\DfsrAnalyser`. No .NET install is needed.
-3. Open a PowerShell window in that folder. Commands below use `.\dfsra.exe`; the app is `.\DfsrAnalyser.exe`.
+1. On the build machine: `pwsh tools\New-Package.ps1` → `artifacts\DfsrAnalyser-<version>.zip` (the release zip).
+2. Copy the zip and this checklist into a lab VM that is **joined to the lab domain** (a member server or a third VM;
+   running on a DFSR member also works). Extract it, e.g. to `C:\DfsrAnalyser`. No .NET install is needed.
+3. Open a PowerShell window in its `app` folder (`C:\DfsrAnalyser\app`). Commands below use `.\dfsra.exe`; the app
+   is `.\DfsrAnalyser.exe`. Sections A to F run from there without installing; section G installs.
 4. Use a fresh case folder for the tests, e.g. `C:\Cases\lab1`.
 5. Generate some DFSR activity before step C (copy a few files into a replicated folder on one member).
 
@@ -124,16 +125,18 @@ create `trace-test.txt`, then edit it, wait a minute, and delete it. Then collec
 
 ## G. Installer — phase 7
 
-Build on the build machine with `pwsh tools\New-Installer.ps1` → `artifacts\DfsrAnalyser-<version>.msi`. Copy the MSI into a lab VM and sign in as an ordinary domain user (not an administrator) for G1 to G4.
+There is no MSI any more: the release is the zip from the setup, installed by a script. Sign in to a lab VM as an ordinary domain user (not an administrator) for G1 to G4, and extract the zip with Explorer (so it carries the mark of the web, as a browser download would).
 
 | # | Action | Expected |
 |---|---|---|
-| G1 | Double-click the MSI | Installs with a progress bar only: no UAC prompt and no questions. SmartScreen may warn because the file is unsigned (*More info › Run anyway*) |
-| G2 | Start menu › *DFSR Analyser* | The app opens with the blue chart icon in the title bar and taskbar. *Help › About* shows the version and `%LOCALAPPDATA%\Programs\DFSR Analyser\`. *Help › Read me* opens the README |
+| G1 | Double-click *Install DFSR Analyser.cmd* in the extracted folder | A console lists *installed to*, *Start menu*, *PATH* and *listed in*, then *Done*. No UAC prompt, no SmartScreen warning, no execution-policy error |
+| G2 | Start menu › *DFSR Analyser* | The app opens with the blue chart icon in the title bar and taskbar. *Help › About* shows the version and `%LOCALAPPDATA%\Programs\DFSR Analyser\`. *Help › User guide* (and F1) opens the user guide, *Help › Read me* the README |
 | G3 | Open a **new** console and run `dfsra` | Prints help. The program folder is on the user PATH, so it runs from any folder |
 | G4 | Open a case from section E, check that facets, Top-N and trace work, then close the app | Same as before the install. The case folder is untouched apart from normal use |
-| G5 | Build a higher version (`New-Installer.ps1 -Version 1.0.1`) and install it over the first | Upgrades in place: one entry in *Installed apps*, *About* shows 1.0.1, recent cases are kept |
-| G6 | *Settings › Apps › Installed apps › DFSR Analyser › Uninstall* | Program folder, Start menu shortcut and PATH entry are gone. Cases and `%LOCALAPPDATA%\DfsrAnalyser\settings.json` remain |
+| G5 | Build a higher version (`New-Package.ps1 -Version 1.0.1`) and install it over the first | Upgrades in place: one entry in *Installed apps*, *About* shows 1.0.1, recent cases are kept, PATH has one entry |
+| G6 | *Settings › Apps › Installed apps › DFSR Analyser › Uninstall* | A console lists what it removed and waits for Enter. Program folder, Start menu shortcut and PATH entry are gone. Cases and `%LOCALAPPDATA%\DfsrAnalyser\settings.json` remain |
+| G7 | (Only if the VM has internet access) in Windows PowerShell: `irm https://raw.githubusercontent.com/MrR1974/DFSR-Analyser/main/install.ps1 \| iex` | Downloads the latest release, *verified SHA-256*, then installs as in G1. The PowerShell window stays open |
+| G8 | (Only where the 1.0.0 MSI is still installed) run the installer there | *removed the earlier MSI install*, then installs; *Installed apps* shows one DFSR Analyser |
 
 ## Known behaviours to confirm (not failures)
 

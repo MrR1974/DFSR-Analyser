@@ -6,19 +6,31 @@ It is a Windows desktop app, `DfsrAnalyser.exe`. A command-line companion, `dfsr
 
 ## Install
 
-Run `DfsrAnalyser-<version>.msi`.
+In PowerShell (Windows PowerShell or PowerShell 7), as yourself, not as administrator:
 
-- **Rights and prerequisites:** the installer does not need administrator rights, and you don't need to install .NET.
+```powershell
+irm https://raw.githubusercontent.com/MrR1974/DFSR-Analyser/main/install.ps1 | iex
+```
+
+This downloads the latest release, checks it against its published SHA-256 and installs it. To read the script before running it, open [`install.ps1`](install.ps1).
+
+Or install by hand: download `DfsrAnalyser-<version>.zip` from [Releases](https://github.com/MrR1974/DFSR-Analyser/releases), extract it, and double-click **Install DFSR Analyser.cmd**.
+
+- **Rights and prerequisites:** no administrator rights, and you don't need to install .NET.
 - **Where it goes:** the program installs for the current user in `%LOCALAPPDATA%\Programs\DFSR Analyser`.
 - **What it adds:**
   - a *DFSR Analyser* Start menu shortcut;
-  - the program folder on your PATH, so `dfsra` works in any console you open afterwards.
-- **Upgrades:** installing a newer version replaces the old one.
+  - the program folder on your PATH, so `dfsra` works in any console you open afterwards (`Install-DfsrAnalyser.ps1 -NoPath` skips this);
+  - an entry in *Settings › Apps › Installed apps*.
+- **Upgrades:** run the installer again. It replaces the old version and keeps your settings.
 - **Uninstall:** use *Settings › Apps › Installed apps*. Your cases are kept, and so is `%LOCALAPPDATA%\DfsrAnalyser\settings.json`, which holds your recent cases and the UTC/local choice.
+- **Without installing:** run `app\DfsrAnalyser.exe` or `app\dfsra.exe` straight from the extracted zip. This is handy on a server or in an isolated lab.
 
-You can also extract `DfsrAnalyser-<version>.zip` anywhere and run it from there. This is handy on a server or in an isolated lab.
+The release is a zip with an install script rather than an MSI because the program isn't code-signed, and Windows SmartScreen warns about every unsigned installer it sees downloaded.
 
 Supported: Windows 10/11 and Windows Server 2016 or later, x64. The logs must come from Windows Server 2016 or later.
+
+**How to use it:** the [user guide](docs/User-Guide.md) covers everything from getting good logs to typical investigations. In the app, use **Help › User guide** (F1). The quick start below is the short version.
 
 ## Quick start
 
@@ -81,14 +93,15 @@ dfsra collect --case D:\Cases\Branch42 --discover --rg "Branch Data" --last 6h
 
 ## Build from source
 
-You need the .NET 10 SDK. To build the installer you also need WiX 5 (`dotnet tool install --global wix`).
+You need the .NET 10 SDK.
 
 ```
 dotnet build DfsrAnalyser.slnx
 dotnet test
-.\tools\New-Installer.ps1          # artifacts\DfsrAnalyser-<version>.msi and .zip
-.\tools\Publish-Lab.ps1            # artifacts\lab\DfsrAnalyser-lab.zip (adds the lab test checklist)
+.\tools\New-Package.ps1            # artifacts\DfsrAnalyser-<version>.zip and .zip.sha256 (the release)
 ```
+
+A release is a GitHub release tagged `v<version>` with `DfsrAnalyser-<version>.zip` and its `.sha256` attached. `install.ps1` finds both by those exact names.
 
 | Path | Contents |
 |---|---|
@@ -97,6 +110,13 @@ dotnet test
 | `src/DfsrAnalyser.App` | WPF app |
 | `src/DfsrAnalyser.Cli` | `dfsra` |
 | `tests/DfsrAnalyser.Tests` | xUnit tests on lab log fragments |
-| `installer/` | WiX source for the MSI |
+| `tools/` | Packaging (`New-Package.ps1`), the install and uninstall scripts, the icon generator |
+| `install.ps1` | The one-line installer |
+| `docs/User-Guide.md` | How to use it |
+| `docs/Lab-Test-Checklist.md` | Manual tests against a DFSR lab (collection needs real servers) |
 | `PLAN.md` | Design decisions, findings and build notes |
 | `DFSR-Debug-Log-Reference.md` | How DFSR debug logs are put together |
+
+## Licence
+
+MIT. See [LICENSE](LICENSE). Third-party components and their licences are listed in [NOTICE.md](NOTICE.md).

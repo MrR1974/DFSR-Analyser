@@ -458,6 +458,17 @@ public sealed partial class MainViewModel : ObservableObject
         if (HasReadme) OpenText(ReadmePath);
     }
 
+    /// <summary>The user guide shipped next to the executable (docs/User-Guide.md in the source tree).</summary>
+    private static string UserGuidePath => Path.Combine(AppContext.BaseDirectory, "User-Guide.md");
+
+    public bool HasUserGuide => File.Exists(UserGuidePath);
+
+    [RelayCommand]
+    private void OpenUserGuide()
+    {
+        if (HasUserGuide) OpenText(UserGuidePath);
+    }
+
     [RelayCommand]
     private static void About()
     {
@@ -472,7 +483,7 @@ public sealed partial class MainViewModel : ObservableObject
             $"Program folder: {AppContext.BaseDirectory}\n" +
             $"Settings: {AppSettings.FilePath}\n" +
             $".NET {Environment.Version}\n\n" +
-            "The command-line harness is dfsra.exe in the program folder (run it without arguments for help).",
+            "The command line is dfsra.exe in the program folder (run it without arguments for help).",
             "About DFSR Analyser", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
